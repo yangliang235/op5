@@ -22,54 +22,64 @@ jobs:
           ref: blu_spark-10
           fetch-depth: 1
 
-      # 2. 安装编译依赖
+      # 2. 安装编译依赖（已修复包名错误 + 32位兼容库）
       - name: Install build dependencies
         run: |
-          sudo apt update -y
-          sudo apt install -y \
+          # 使用 apt-get 替代 apt，消除CLI不稳定警告
+          sudo apt-get update -y
+          sudo apt-get install -y \
             git make gcc clang libncurses-dev \
             bison flex libssl-dev bc zip unzip \
-            aarch64-linux-gnu-gcc crossbuild-essential-arm64
+            libc6-i386 lib32stdc++6 # 32位兼容库，支持旧版交叉工具链
 
-      # 3. 下载安卓交叉编译工具链
+      # 3. 下载安卓专用4.9交叉编译工具链（兼容旧内核）
       - name: Download ARM64 cross toolchain
         run: |
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain
           echo "TOOLCHAIN=$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/toolchain/bin:$PATH" >> $GITHUB_ENV
 
       # 4. 配置内核 + 强制开启ZRAM回写
       - name: Configure kernel (enable ZRAM writeback)
         run: |
           # 加载一加5/5T默认配置
           make ARCH=arm64 oneplus5_defconfig
-          # 开启ZRAM回写核心配置
-          sed -i 's/# CONFIG_ZRAM_WRITEBACK is not set/CONFIG_ZRAM_WRITEBACK=y/' .config
-          sed -i 's/CONFIG_ZRAM_WRITEBACK=n/CONFIG_ZRAM_WRITEBACK=y/' .config
-          # 同步配置
+          # 强制开启ZRAM回写，无论原有配置是什么
+          sed -i '/CONFIG_ZRAM_WRITEBACK/c\CONFIG_ZRAM_WRITEBACK=y' .config
+          # 同步配置，自动补全依赖项
           make ARCH=arm64 olddefconfig
+          # 验证配置是否生效（日志可查）
+          echo "=== ZRAM 配置验证 ==="
+          grep CONFIG_ZRAM_WRITEBACK .config
 
-      # 5. 编译内核
-      - name: Build kernel Image.gz-dtb
+      # 5. 编译内核 + 模块
+      - name: Build kernel Image.gz-dtb and modules
         run: |
           make -j$(nproc) ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} Image.gz-dtb
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} modules
 
-      # 6. 拉取AnyKernel3打包脚本（生成刷机包）
+      # 6. 拉取AnyKernel3打包脚本
       - name: Prepare AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-          # 复制编译好的内核到打包目录
+          # 复制编译好的内核
           cp arch/arm64/boot/Image.gz-dtb anykernel/
+          # 安装内核模块到打包目录
+          make ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} modules_install INSTALL_MOD_PATH=anykernel/modules
 
-      # 7. 生成OP5T专用刷机包
+      # 7. 生成带版本号的刷机包
       - name: Pack flashable zip
         run: |
           cd anykernel
-          # 重命名刷机包
-          zip -r9 OP5T-Kernel-ZRAM-Writeback.zip * -x .git README.md *placeholder
+          # 自动获取内核版本 + 日期，生成唯一包名
+          KERNEL_VERSION=$(make ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} kernelversion -s)
+          ZIP_NAME="OP5T-Kernel-ZRAM-Writeback-v${KERNEL_VERSION}-$(date +%Y%m%d).zip"
+          # 打包
+          zip -r9 $ZIP_NAME * -x .git README.md *placeholder
 
       # 8. 上传刷机包到Actions工件
       - name: Upload kernel flashable zip
         uses: actions/upload-artifact@v4
         with:
           name: OP5T-Kernel-ZRAM-Writeback
-          path: anykernel/OP5T-Kernel-ZRAM-Writeback.zip
+          path: anykernel/OP5T-Kernel-ZRAM-Writeback-*.zip
