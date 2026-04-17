@@ -37,14 +37,13 @@ jobs:
     - name: Deep clean kernel source tree
       run: |
         cd ${GITHUB_WORKSPACE}
-        # 删除任何可能存在的输出目录
-        rm -rf out
-        # 删除所有自动生成的文件和配置残留
+        # 删除所有可能的输出目录
+        rm -rf out build
+        # 清理所有自动生成的文件
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- mrproper
-        # 额外手动清理常见残留
+        # 手动删除残留
         rm -f .config .config.old .version Module.symvers
         rm -rf include/config include/generated scripts/basic scripts/kconfig
-        # 清理架构相关的生成文件
         rm -rf arch/arm64/include/generated
 
     - name: Configure kernel (enable ZRAM writeback)
@@ -52,7 +51,7 @@ jobs:
         cd ${GITHUB_WORKSPACE}
         
         echo "Available defconfigs:"
-        ls arch/arm64/configs/*defconfig 2>/dev/null || ls arch/arm64/configs/*_defconfig 2>/dev/null
+        ls arch/arm64/configs/*defconfig 2>/dev/null
         
         if [ -f arch/arm64/configs/blu_spark_defconfig ]; then
           DEFCONFIG=blu_spark_defconfig
@@ -70,18 +69,18 @@ jobs:
         
         echo "Using defconfig: $DEFCONFIG"
         
-        # 直接在当前源码目录编译（不使用 O=out）
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- $DEFCONFIG
+        # 强制在当前目录编译（O=.）
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=. $DEFCONFIG
         echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=. olddefconfig
         grep CONFIG_ZRAM_WRITEBACK .config || echo "Warning: CONFIG_ZRAM_WRITEBACK not found"
 
     - name: Build kernel and dtbs
       run: |
         cd ${GITHUB_WORKSPACE}
-        # 直接编译，不指定 O=
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- dtbs
+        # 强制在当前目录编译（O=.）
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=. -j$(nproc)
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=. dtbs
 
     - name: Prepare kernel image for AnyKernel3
       run: |
