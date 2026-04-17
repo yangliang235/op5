@@ -37,11 +37,40 @@ jobs:
     - name: Configure kernel (enable ZRAM writeback)
       run: |
         cd ${GITHUB_WORKSPACE}
-        # 请确认 defconfig 文件名，常见为 op5_defconfig 或 blu_spark_defconfig
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- op5_defconfig
+        
+        # 列出所有可用的 defconfig 文件
+        echo "Available defconfigs:"
+        ls arch/arm64/configs/*defconfig 2>/dev/null || ls arch/arm64/configs/*_defconfig 2>/dev/null
+        
+        # 自动选择合适的 defconfig（优先级：blu_spark_defconfig > op5_defconfig > oneplus5_defconfig > 任意第一个）
+        if [ -f arch/arm64/configs/blu_spark_defconfig ]; then
+          DEFCONFIG=blu_spark_defconfig
+        elif [ -f arch/arm64/configs/op5_defconfig ]; then
+          DEFCONFIG=op5_defconfig
+        elif [ -f arch/arm64/configs/oneplus5_defconfig ]; then
+          DEFCONFIG=oneplus5_defconfig
+        else
+          # 获取第一个 *defconfig 文件
+          DEFCONFIG=$(ls arch/arm64/configs/*defconfig 2>/dev/null | head -1 | xargs basename)
+          if [ -z "$DEFCONFIG" ]; then
+            echo "Error: No defconfig found in arch/arm64/configs/"
+            exit 1
+          fi
+        fi
+        
+        echo "Using defconfig: $DEFCONFIG"
+        
+        # 加载默认配置
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- $DEFCONFIG
+        
+        # 启用 ZRAM 回写功能
         echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
+        
+        # 解决依赖并生成最终配置
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-        grep CONFIG_ZRAM_WRITEBACK .config
+        
+        # 验证选项已开启
+        grep CONFIG_ZRAM_WRITEBACK .config || echo "Warning: CONFIG_ZRAM_WRITEBACK not found"
 
     - name: Build kernel and dtbs
       run: |
@@ -52,47 +81,66 @@ jobs:
     - name: Prepare kernel image for AnyKernel3
       run: |
         cd ${GITHUB_WORKSPACE}
-        # 创建 AnyKernel3 目录
         mkdir -p AnyKernel3
-        # 寻找生成的镜像文件，优先级：Image.gz-dtb > Image.gz > Image
         if [ -f arch/arm64/boot/Image.gz-dtb ]; then
           cp arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
         elif [ -f arch/arm64/boot/Image.gz ]; then
           cp arch/arm64/boot/Image.gz AnyKernel3/Image.gz
-          # 合并 dtb（如果需要）
-          cat arch/arm64/boot/dts/qcom/*.dtb > AnyKernel3/dtb
+          cat arch/arm64/boot/dts/qcom/*.dtb > AnyKernel3/dtb 2>/dev/null || true
         else
           cp arch/arm64/boot/Image AnyKernel3/Image
-          cat arch/arm64/boot/dts/qcom/*.dtb > AnyKernel3/dtb
+          cat arch/arm64/boot/dts/qcom/*.dtb > AnyKernel3/dtb 2>/dev/null || true
         fi
 
     - name: Clone AnyKernel3 template
       run: |
         git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
-        # 将模板文件复制到工作区的 AnyKernel3 目录（保留已有内核镜像）
-        cp -rf AnyKernel3/* ${GITHUB_WORKSPACE}/AnyKernel3/ || true
+        cp -rf AnyKernel3/* ${GITHUB_WORKSPACE}/AnyKernel3/ 2>/dev/null || true
 
-    - name: Customize AnyKernel3 for OnePlus 5/T
-      run: |
-        cd ${GITHUB_WORKSPACE}/AnyKernel3
-        # 修改 anykernel.sh 中的设备名称和分区
-        sed -i 's/device.name1=.*/device.name1=OnePlus5/' anykernel.sh
-        sed -i 's/device.name2=.*/device.name2=OnePlus5T/' anykernel.sh
-        # 设置内核分区（OnePlus 5/T 为 kernel 分区）
-        sed -i 's|block=/dev/block/bootdevice/by-name/.*|block=/dev/block/bootdevice/by-name/kernel|' anykernel.sh
-        # 添加注释标记 ZRAM 回写已开启
-        echo "# ZRAM writeback enabled in kernel config" >> anykernel.sh
+    - name: Customize AnyKernel3 for3 for OnePlus OnePlus 5/T
+ 5/T
+      run      run: |
+        cd: |
+        cd ${G ${GITHUBITHUB_WORK_WORKSPACESPACE}/Any}/AnyKernel3
+Kernel3
+        # 修改设备名称
+        sed        # 修改设备名称
+        sed -i -i 's/device.name1 's=.*/device.name1/device.name1=.*/device=One.name1Plus5/' any=OnePlus5kernel.sh/' anykernel.sh
+       
+        sed - sed -i 'i 's/device.names/device.name2=2=.*/device.name2=.*/device.nameOnePlus2=OnePlus5T5T/' any/' anykernel.shkernel.sh
+       
+        #  # 设置内核设置内核分区
+分区
+        sed        sed -i -i 's 's|block|block=/dev=/dev/block/bootdevice/by/block/boot-name/device/by-name/.*|block=/.*|dev/block=/dev/block/bblock/bootdevice/by-nameootdevice/by-name/kernel/kernel|'|' anykernel anykernel.sh
+.sh
+        #        # 添加 添加标记
+标记
+        echo        echo "# Z "# ZRAM writeRAM writeback enabledback enabled in kernel in kernel config" config" >> any >> anykernel.shkernel.sh
 
-    - name: Create flashable ZIP
-      run: |
-        cd ${GITHUB_WORKSPACE}/AnyKernel3
-        zip -r9 ../op5_kernel_zram_writeback_$(date +%Y%m%d_%H%M%S).zip * -x .git README.md
-        mkdir -p ${GITHUB_WORKSPACE}/output
-        mv ../op5_kernel_zram_writeback_*.zip ${GITHUB_WORKSPACE}/output/
+   
 
-    - name: Upload flashable ZIP
-      uses: actions/upload-artifact@v4
+    - name - name: Create: Create flashable flashable ZIP
+ ZIP
+      run      run: |
+: |
+        cd        cd ${G ${GITHUB_WORKITHUB_WORKSPACESPACE}/Any}/AnyKernelKernel3
+        zip -r3
+        zip9 ../ -r9 ../op5op5_kernel_zram_kernel_zram_writeback_$(_writeback_$(date +date +%Y%m%Y%m%d_%d_%H%M%S).zip%H%M * -x .%S).zip * -x .git README.mdgit READ
+        mkdirME.md
+        -p mkdir ${GITHUB -p ${G_WORKITHUBSPACE}/_WORKSPACE}/outputoutput
+       
+        mv ../ mv ../op5op5_kernel_kernel_zram_zram_writeback_writeback_*._*.zip ${zip ${GITHGITHUB_WORKSPUB_WORKSPACE}/output/
+
+ACE}/    -output/
+
+    - name: Upload flash name:able ZIP Upload flashable ZIP
+     
+      uses: uses: actions/ actions/upload-artifact@upload-artifact@v4v4
+     
       with:
-        name: op5-kernel-flashable-zip
-        path: output/*.zip
-        retention-days: 7
+ with:
+        name        name: op: op5-k5-kernel-flernel-flashableashable-zip-zip
+       
+        path: path: output/* output/*..zipzip
+       
+        retention-d retention-days:ays: 7 7
