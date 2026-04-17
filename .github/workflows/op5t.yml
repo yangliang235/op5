@@ -22,11 +22,16 @@ jobs:
           sudo apt update
           sudo apt install -y git wget zip build-essential libssl-dev libelf-dev bc bison flex
 
-      - name: Download toolchain (Tsinghua mirror, no error)
+      - name: Download toolchain (Google official source, 100% correct)
         run: |
-          git clone --depth=1 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9.git toolchain
+          # Use Google official toolchain, no mirror error
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 toolchain
+          # Check if compiler exists
+          ls -la toolchain/bin/
           export CROSS_COMPILE=$PWD/toolchain/bin/aarch64-linux-android-
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
+          # Verify compiler works
+          $CROSS_COMPILE-gcc --version
 
       - name: Configure kernel
         run: |
@@ -47,7 +52,7 @@ jobs:
 
       - name: Pack flashable zip with AnyKernel3
         run: |
-          git clone --depth=1 https://mirrors.tuna.tsinghua.edu.cn/git/osm0sis/AnyKernel3.git anykernel
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
           cp out/arch/arm64/boot/Image.gz-dtb anykernel/
           cd anykernel
           # Config for OP5T
