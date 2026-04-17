@@ -44,13 +44,14 @@ jobs:
         run: |
           # 加载OP5/OP5T专用性能版默认配置（自动输出到out/目录）
           make ARCH=arm64 op5-perf_defconfig
-          # 修复：.config在out/子目录里，不是根目录！
-          sed -i '/CONFIG_ZRAM_WRITEBACK/c\CONFIG_ZRAM_WRITEBACK=y' out/.config
-          # 同步配置，自动补全依赖项
+          # 强制开启ZRAM和回写功能：无论原有配置是否存在，直接追加到.config末尾，确保一定生效
+          echo "CONFIG_ZRAM=y" >> out/.config
+          echo "CONFIG_ZRAM_WRITEBACK=y" >> out/.config
+          # 同步配置，自动补全所有依赖项
           make ARCH=arm64 olddefconfig
-          # 验证配置是否生效（日志可查）
+          # 验证配置是否生效（日志可查，同时检查ZRAM主开关和回写开关）
           echo "=== ZRAM 配置验证 ==="
-          grep CONFIG_ZRAM_WRITEBACK out/.config
+          grep -E "CONFIG_ZRAM|CONFIG_ZRAM_WRITEBACK" out/.config
 
       # 5. 编译内核 + 模块
       - name: Build kernel Image.gz-dtb and modules
