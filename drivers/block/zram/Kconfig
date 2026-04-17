@@ -15,16 +15,15 @@ config ZRAM
 	  See Documentation/blockdev/zram.txt for more information.
 
 config ZRAM_WRITEBACK
-       bool "Write back incompressible page to backing device"
-       depends on ZRAM
-       default n
+       bool "ZRAM writeback support"
+       depends on ZRAM && TRANSPARENT_HUGEPAGE && ZSMALLOC
+       default y
        help
-	 With incompressible page, there is no memory saving to keep it
-	 in memory. Instead, write it out to backing device.
-	 For this feature, admin should set up backing device via
-	 /sys/block/zramX/backing_dev.
+         This enables compressed memory writeback to backing device
+         for zram. This allows zram to evict unused compressed pages
+         to a backing device (like swap partition) to free up memory.
 
-	 See Documentation/blockdev/zram.txt for more information.
+         If unsure, say N.
 
 config ZRAM_MEMORY_TRACKING
 	bool "Track zRam block status"
