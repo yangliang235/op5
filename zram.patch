@@ -1,0 +1,48 @@
+diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
+index 3f2a697..d13a0d2 100644
+--- a/drivers/block/zram/Kconfig
++++ b/drivers/block/zram/Kconfig
+@@ -14,6 +14,17 @@ config ZRAM
+          If you choose to build a module, it'll be called zram.
+ 
+ if ZRAM
++config ZRAM_WRITEBACK
++       bool "ZRAM writeback support"
++       depends on ZRAM && TRANSPARENT_HUGEPAGE && ZSMALLOC
++       default y
++       help
++         This enables compressed memory writeback to backing device
++         for zram. This allows zram to evict unused compressed pages
++         to a backing device (like swap partition) to free up memory.
++
++         If unsure, say N.
++
+ config ZRAM_LZ4_COMPRESS
+        bool "Enable LZ4 algorithm support for zram"
+        default y
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index 334455a..f78a9b1 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -32,6 +32,9 @@
+ #include <linux/atomic.h>
+ #include <linux/idr.h>
+ #include <linux/highmem.h>
++#ifdef CONFIG_ZRAM_WRITEBACK
++#include <linux/swap.h>
++#endif
+ 
+ #include "zram_drv.h"
+ 
+@@ -100,6 +103,11 @@ static struct zram *zram_devices;
+ module_param_named(num_devices, zram_num_devices, int, 0);
+ MODULE_PARM_DESC(num_devices, "Number of zram devices");
+ 
++#ifdef CONFIG_ZRAM_WRITEBACK
++static unsigned int zram_watermark;
++module_param_named(watermark, zram_watermark, uint, 0644);
++#endif
++
+ static struct kobj_type zram_ktype = {
+        .sysfs_ops = &zram_sysfs_ops,
+        .release = zram_release,
