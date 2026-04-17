@@ -1,78 +1,86 @@
-name: Build OnePlus 5/T Kernel (with ZRAM Writeback)
+name: Build Kernel & Create Flashable ZIP (ZRAM Writeback)
 
 on:
   push:
     branches: [ "master", "main" ]
   pull_request:
     branches: [ "master", "main" ]
-  workflow_dispatch:       # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04   # 使用 Ubuntu 22.04 保证工具链兼容性
-
+    runs-on: ubuntu-22.04
     steps:
     - name: Checkout kernel source
       uses: actions/checkout@v4
       with:
-        fetch-depth: 1       # 只拉取最新代码，加快速度
+        fetch-depth: 1
 
     - name: Install cross-compilation toolchain
       run: |
         sudo apt update
         sudo apt install -y \
-          build-essential \
-          flex \
-          bison \
-          bc \
-          kmod \
-          cpio \
-          device-tree-compiler \
-          gcc-aarch64-linux-gnu \
-          libssl-dev \
-          libelf-dev
+          build-essential flex bison bc kmod cpio device-tree-compiler \
+          gcc-aarch64-linux-gnu libssl-dev libelf-engine
 
     - name: Configure kernel (enable ZRAM writeback)
       run: |
-        # 进入内核源码根目录
         cd ${GITHUB_WORKSPACE}
-        
-        # 使用设备专用的 defconfig（根据该仓库常规命名为 op5_defconfig）
-        # 如果实际文件名不同，可改为 blu_spark_defconfig 或自行列出 configs 目录
+        # 根据实际 defconfig 文件名修改（常见为 op5_defconfig 或 blu_spark_defconfig）
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- op5_defconfig
-        
-        # 启用 ZRAM 回写功能（CONFIG_ZRAM_WRITEBACK=y）
         echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
-        
-        # 自动解决新增配置项的依赖关系（保持其他选项为默认值）
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-        
-        # 可选：验证 ZRAM_WRITEBACK 是否成功启用
-        grep CONFIG_ZRAM_WRITEBACK .config || echo "Warning: CONFIG_ZRAM_WRITEBACK not found"
+        grep CONFIG_ZRAM_WRITEBACK .config
 
-    - name: Build kernel image and DTBs
+    - name: Build kernel and dtbs
       run: |
         cd ${GITHUB_WORKSPACE}
-        # 使用所有 CPU 核心编译，减少时间
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
-        # 编译设备树文件（OnePlus 5/T 需要）
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- dtbs
 
-    - name: Prepare artifacts
+    - name: Prepare kernel image for AnyKernel3
       run: |
-        mkdir -p kernel_out
-        # 复制内核镜像（通常为 Image.gz）
-        cp arch/arm64/boot/Image.gz kernel_out/ 2>/dev/null || echo "Image.gz not found"
-        # 复制设备树二进制文件
-        cp arch/arm64/boot/dts/qcom/*.dtb kernel_out/ 2>/dev/null || true
-        # 复制任何生成的 zImage 或 Image
-        cp arch/arm64/boot/Image kernel_out/ 2>/dev/null || true
-        # 保存最终配置文件（便于检查）
-        cp .config kernel_out/config_$(date +%Y%m%d_%H%M%S)
+        cd ${GITHUB_WORKSPACE}
+        # 寻找生成的镜像文件，优先级：Image.gz-dtb > Image.gz > Image
+        if [ -f arch/arm64/boot/Image.gz-dtb ]; then
+          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
+        elif [ -f arch/arm64/boot/Image.gz ]; then
+          cp arch/arm64/boot/Image.gz AnyKernel3/Image.gz
+          # 合并 dtb（如果需要）
+          cat arch/arm64/boot/dts/qcom/*.dtb > AnyKernel3/dtb
+        else
+          cp arch/arm64/boot/Image AnyKernel3/Image
+          cat arch/arm64/boot/dts/qcom/*.dtb > AnyKernel3/dtb
+        fi
 
-    - name: Upload kernel artifacts
+    - name: Clone AnyKernel3 template
+      run: |
+        git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
+        # 准备 AnyKernel3 目录结构
+        cp -rf AnyKernel3/* ${GITHUB_WORKSPACE}/AnyKernel3/
+
+    - name: Customize AnyKernel3 for OnePlus 5/T
+      run: |
+        cd ${GITHUB_WORKSPACE}/AnyKernel3
+        # 修改 anykernel.sh 中的设备名称和分区（示例）
+        sed -i 's/device.name1=.*/device.name1=OnePlus5/' anykernel.sh
+        sed -i 's/device.name2=.*/device.name2=OnePlus5T/' anykernel.sh
+        # 设置正确的内核分区（OnePlus 5/T 为 /dev/block/bootdevice/by-name/kernel）
+        sed -i 's/block=.*/block=\/dev\/block\/bootdevice\/by-name\/kernel/' anykernel.sh
+        # 可选：添加对 dtb 的支持
+        echo "## ZRAM writeback enabled" >> anykernel.sh
+
+    - name: Create flashable ZIP
+      run: |
+        cd ${GITHUB_WORKSPACE}/AnyKernel3
+        zip -r9 ../op5_kernel_zram_writeback_$(date +%Y%m%d_%H%M%S).zip * -x .git README.md
+        # 移动到单独的 artifacts 目录
+        mkdir -p ${GITHUB_WORKSPACE}/output
+        mv ../op5_kernel_zram_writeback_*.zip ${GITHUB_WORKSPACE}/output/
+
+    - name: Upload flashable ZIP
       uses: actions/upload-artifact@v4
       with:
-        name: op5-kernel-zram-writeback
-        path: kernel_out/
+        name: op5-kernel-flashable-zip
+        path: output/*.zip
         retention-days: 7
