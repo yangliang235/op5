@@ -34,8 +34,8 @@ jobs:
           export CROSS_COMPILE=$PWD/toolchain/bin/aarch64-linux-android-
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
           
-          # Test compiler
-          $CROSS_COMPILE-gcc --version
+          # Test compiler (FIXED: no extra dash, CROSS_COMPILE already has it!)
+          $CROSS_COMPILE"gcc" --version
 
       - name: Configure kernel
         run: |
