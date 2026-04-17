@@ -22,12 +22,12 @@ jobs:
           sudo apt update
           sudo apt install -y git wget zip build-essential libssl-dev libelf-dev bc bison flex
 
-      - name: Download toolchain (GCC 7.x, compatible with OP5T kernel)
+      - name: Download toolchain (arter97 GCC 7.4, Android kernel standard)
         run: |
-          # Use GCC 7.x toolchain, supports cortex-a73.cortex-a53 and new warning flags
-          wget -O toolchain.zip https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-7/archive/refs/heads/lineage-18.1.zip
+          # Use arter97's GCC 7.4, standard for Android kernels, works perfectly with OP5T
+          wget -O toolchain.zip https://github.com/arter97/arm64-gcc/archive/refs/heads/master.zip
           unzip -q toolchain.zip
-          mv android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-7-lineage-18.1 toolchain
+          mv arm64-gcc-master toolchain
           
           # Verify toolchain files
           ls -la toolchain/bin/
