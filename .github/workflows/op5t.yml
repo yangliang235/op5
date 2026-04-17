@@ -1,15 +1,13 @@
 # 构建OP5T内核 | 开启ZRAM回写 | 生成AnyKernel3刷机包
 name: Build OP5T Kernel (ZRAM Writeback)
 
-# 触发条件：手动触发、push代码、PR合并
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
   push:
-    branches: [ blu_spark-10 ] # 匹配你的内核分支
+    branches: [ blu_spark-10 ]
   pull_request:
     branches: [ blu_spark-10 ]
 
-# 构建任务
 jobs:
   build-kernel:
     runs-on: ubuntu-latest
@@ -22,17 +20,16 @@ jobs:
           ref: blu_spark-10
           fetch-depth: 1
 
-      # 2. 安装编译依赖：使用新版系统交叉编译器，支持新编译选项
+      # 2. 安装编译依赖
       - name: Install build dependencies
         run: |
-          # 使用 apt-get 替代 apt，消除CLI不稳定警告
           sudo apt-get update -y
           sudo apt-get install -y \
             git make gcc clang libncurses-dev \
             bison flex libssl-dev bc zip unzip \
-            gcc-aarch64-linux-gnu # 安装Ubuntu官方新版ARM64交叉编译器，支持新编译选项
+            gcc-aarch64-linux-gnu
 
-      # 3. 配置交叉编译器：使用系统新版编译器，替代旧的4.9版本
+      # 3. 配置交叉编译器
       - name: Setup cross compiler
         run: |
           echo "TOOLCHAIN=/usr/bin/aarch64-linux-gnu-" >> $GITHUB_ENV
@@ -40,14 +37,10 @@ jobs:
       # 4. 配置内核 + 强制开启ZRAM回写
       - name: Configure kernel (enable ZRAM writeback)
         run: |
-          # 加载OP5/OP5T专用性能版默认配置（自动输出到out/目录）
           make ARCH=arm64 op5-perf_defconfig
-          # 强制开启ZRAM和回写功能，无论原有配置是否存在，直接追加到.config末尾，确保一定生效
           echo "CONFIG_ZRAM=y" >> out/.config
           echo "CONFIG_ZRAM_WRITEBACK=y" >> out/.config
-          # 同步配置，自动补全所有依赖项
           make ARCH=arm64 olddefconfig
-          # 验证配置是否生效（日志可查，同时检查ZRAM主开关和回写开关）
           echo "=== ZRAM 配置验证 ==="
           grep -E "CONFIG_ZRAM|CONFIG_ZRAM_WRITEBACK" out/.config
 
@@ -57,24 +50,33 @@ jobs:
           make -j$(nproc) ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} Image.gz-dtb
           make -j$(nproc) ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} modules
 
-      # 6. 拉取AnyKernel3打包脚本
-      - name: Prepare AnyKernel3
+      # 6. 拉取AnyKernel3并修改设备支持
+      - name: Prepare AnyKernel3 (add OP5/OP5T support)
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-          # 修复：内核产物在out/子目录里，不是源码根目录！
+          # 复制编译好的内核
           cp out/arch/arm64/boot/Image.gz-dtb anykernel/
           # 安装内核模块到打包目录
           make ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} modules_install INSTALL_MOD_PATH=anykernel/modules
 
+          # 关键修改：在anykernel.sh中添加一加5/5T设备支持
+          # 一加5设备代号：cheeseburger；一加5T设备代号：dumpling
+          cd anykernel
+          # 替换默认设备校验部分，添加对cheeseburger和dumpling的支持
+          sed -i '/# Supported devices/,/^$/c\
+# Supported devices\n\
+if [ -z "$(grep -E "cheeseburger|dumpling" /proc/cpuinfo /proc/version /proc/devices /proc/partitions)" ]; then\n\
+    echo "Unsupported device, Aborting..."\n\
+    exit 1\n\
+fi\n\
+' anykernel.sh
+
       # 7. 生成带版本号的刷机包
       - name: Pack flashable zip
         run: |
-          # 修复：先在源码根目录获取内核版本，再cd到anykernel！
           KERNEL_VERSION=$(make ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} kernelversion -s)
           cd anykernel
-          # 生成唯一包名
           ZIP_NAME="OP5T-Kernel-ZRAM-Writeback-v${KERNEL_VERSION}-$(date +%Y%m%d).zip"
-          # 打包
           zip -r9 $ZIP_NAME * -x .git README.md *placeholder
 
       # 8. 上传刷机包到Actions工件
