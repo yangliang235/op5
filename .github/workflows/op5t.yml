@@ -1,86 +1,40 @@
-name: OP5T 4.4.205+ ZRAM Writeback (Stock WiFi)
+name: Build OP5T Kernel with ZRAM Writeback
+
 on:
   workflow_dispatch:
   push:
+    branches: [ blu_spark-10 ]
+  pull_request:
     branches: [ blu_spark-10 ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout your kernel
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
-          repository: yangliang235/op5
           ref: blu_spark-10
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Install dependencies
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y git make gcc libncurses-dev bison flex libssl-dev bc zip unzip
+          sudo apt update
+          sudo apt install -y git wget zip build-essential libssl-dev libelf-dev bc bison flex
 
-      - name: Get toolchain
+      - name: Download toolchain (Gitee mirror, fast speed)
         run: |
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain
-          echo "CROSS_COMPILE=$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-" >> $GITHUB_ENV
-
-      - name: Apply ZRAM Writeback patch
-        run: |
-          git apply <<'EOF'
-diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
-index 3f2a697..d13a0d2 100644
---- a/drivers/block/zram/Kconfig
-+++ b/drivers/block/zram/Kconfig
-@@ -14,6 +14,17 @@ config ZRAM
-          If you choose to build a module, it'll be called zram.
- 
- if ZRAM
-+config ZRAM_WRITEBACK
-+       bool "ZRAM writeback support"
-+       depends on ZRAM && TRANSPARENT_HUGEPAGE && ZSMALLOC
-+       default y
-+       help
-+         This enables compressed memory writeback to backing device
-+         for zram. This allows zram to evict unused compressed pages
-+         to a backing device (like swap partition) to free up memory.
-+
-+         If unsure, say N.
-+
- config ZRAM_LZ4_COMPRESS
-        bool "Enable LZ4 algorithm support for zram"
-        default y
-diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
-index 334455a..f78a9b1 100644
---- a/drivers/block/zram/zram_drv.c
-+++ b/drivers/block/zram/zram_drv.c
-@@ -32,6 +32,9 @@
- #include <linux/atomic.h>
- #include <linux/idr.h>
- #include <linux/highmem.h>
-+#ifdef CONFIG_ZRAM_WRITEBACK
-+#include <linux/swap.h>
-+#endif
- 
- #include "zram_drv.h"
- 
-@@ -100,6 +103,11 @@ static struct zram *zram_devices;
- module_param_named(num_devices, zram_num_devices, int, 0);
- MODULE_PARM_DESC(num_devices, "Number of zram devices");
- 
-+#ifdef CONFIG_ZRAM_WRITEBACK
-+static unsigned int zram_watermark;
-+module_param_named(watermark, zram_watermark, uint, 0644);
-+#endif
-+
- static struct kobj_type zram_ktype = {
-        .sysfs_ops = &zram_sysfs_ops,
-        .release = zram_release,
-EOF
+          wget -q -O toolchain.zip https://gitee.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/master.zip
+          unzip -q toolchain.zip
+          mv android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9-master toolchain
+          export CROSS_COMPILE=$PWD/toolchain/bin/aarch64-linux-android-
+          echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
 
       - name: Configure kernel
         run: |
+          export CROSS_COMPILE=$CROSS_COMPILE
           make ARCH=arm64 op5-perf_defconfig
+          # Enable ZRAM Writeback config
           sed -i '/CONFIG_ZRAM_WRITEBACK/d' .config
           echo "CONFIG_ZRAM=y" >> .config
           echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
@@ -88,23 +42,27 @@ EOF
           echo "CONFIG_TRANSPARENT_HUGEPAGE=y" >> .config
           make ARCH=arm64 olddefconfig
 
-      - name: Build kernel
+      - name: Build kernel (only Image.gz-dtb, no modules to keep WiFi stock)
         run: |
-          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=${{ env.CROSS_COMPILE }} Image.gz-dtb
+          export CROSS_COMPILE=$CROSS_COMPILE
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE Image.gz-dtb
 
-      - name: Pack AnyKernel
+      - name: Pack flashable zip with AnyKernel3
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+          wget -q -O anykernel.zip https://gitee.com/osm0sis/AnyKernel3/archive/master.zip
+          unzip -q anykernel.zip
+          mv AnyKernel3-master anykernel
           cp arch/arm64/boot/Image.gz-dtb anykernel/
           cd anykernel
+          # Config for OP5T
           sed -i 's/device.name1=maguro/device.name1=cheeseburger/' anykernel.sh
           sed -i 's/device.name2=toro/device.name2=dumpling/' anykernel.sh
           sed -i 's/do.modules=1/do.modules=0/' anykernel.sh
           sed -i 's|BLOCK=.*|BLOCK=/dev/block/bootdevice/by-name/boot|' anykernel.sh
-          zip -r9 OP5T-Kernel-ZRAM-StockWiFi.zip * -x .git README.md
+          zip -r9 OP5T-BluSpark-ZRAM-Writeback.zip * -x .git README.md
 
-      - name: Upload
+      - name: Upload flashable zip
         uses: actions/upload-artifact@v4
         with:
-          name: OP5T-Kernel-ZRAM-StockWiFi
-          path: anykernel/OP5T-Kernel-ZRAM-StockWiFi.zip
+          name: OP5T-Kernel-ZRAM
+          path: anykernel/OP5T-BluSpark-ZRAM-Writeback.zip
