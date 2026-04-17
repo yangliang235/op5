@@ -42,15 +42,15 @@ jobs:
       # 4. 配置内核 + 强制开启ZRAM回写
       - name: Configure kernel (enable ZRAM writeback)
         run: |
-          # 加载OP5/OP5T专用性能版默认配置（已修复defconfig名字错误）
+          # 加载OP5/OP5T专用性能版默认配置（自动输出到out/目录）
           make ARCH=arm64 op5-perf_defconfig
-          # 强制开启ZRAM回写，无论原有配置是什么
-          sed -i '/CONFIG_ZRAM_WRITEBACK/c\CONFIG_ZRAM_WRITEBACK=y' .config
+          # 修复：.config在out/子目录里，不是根目录！
+          sed -i '/CONFIG_ZRAM_WRITEBACK/c\CONFIG_ZRAM_WRITEBACK=y' out/.config
           # 同步配置，自动补全依赖项
           make ARCH=arm64 olddefconfig
           # 验证配置是否生效（日志可查）
           echo "=== ZRAM 配置验证 ==="
-          grep CONFIG_ZRAM_WRITEBACK .config
+          grep CONFIG_ZRAM_WRITEBACK out/.config
 
       # 5. 编译内核 + 模块
       - name: Build kernel Image.gz-dtb and modules
@@ -62,8 +62,8 @@ jobs:
       - name: Prepare AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-          # 复制编译好的内核
-          cp arch/arm64/boot/Image.gz-dtb anykernel/
+          # 修复：内核产物在out/子目录里，不是源码根目录！
+          cp out/arch/arm64/boot/Image.gz-dtb anykernel/
           # 安装内核模块到打包目录
           make ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} modules_install INSTALL_MOD_PATH=anykernel/modules
 
