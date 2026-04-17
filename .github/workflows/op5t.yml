@@ -1,7 +1,6 @@
 name: OP5T 4.4.205+ ZRAM Writeback (Stock WiFi)
-# 保留手动Run按钮 + 只在blu_spark-10分支生效
 on:
-  workflow_dispatch:  # 必须单独一行，保证按钮显示
+  workflow_dispatch:
   push:
     branches: [ blu_spark-10 ]
 
@@ -9,14 +8,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout your kernel (yangliang235/op5, blu_spark-10)
+      - name: Checkout your kernel
         uses: actions/checkout@v4
         with:
           repository: yangliang235/op5
           ref: blu_spark-10
           fetch-depth: 1
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update -y
           sudo apt-get install -y git make gcc libncurses-dev bison flex libssl-dev bc zip unzip
@@ -26,8 +25,7 @@ jobs:
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain
           echo "CROSS_COMPILE=$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-" >> $GITHUB_ENV
 
-      # 只加4.4专用ZRAM回写补丁，原内核代码一概不动
-      - name: Apply ZRAM Writeback patch (4.4 only)
+      - name: Apply ZRAM Writeback patch
         run: |
           git apply <<'EOF'
 diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
@@ -80,10 +78,9 @@ index 334455a..f78a9b1 100644
         .release = zram_release,
 EOF
 
-      - name: Enable ZRAM Writeback in config (no other changes)
+      - name: Configure kernel
         run: |
           make ARCH=arm64 op5-perf_defconfig
-          # 只开ZRAM回写，不碰任何其他配置
           sed -i '/CONFIG_ZRAM_WRITEBACK/d' .config
           echo "CONFIG_ZRAM=y" >> .config
           echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
@@ -91,11 +88,11 @@ EOF
           echo "CONFIG_TRANSPARENT_HUGEPAGE=y" >> .config
           make ARCH=arm64 olddefconfig
 
-      - name: Build kernel Image only (NO modules → WiFi 100% stock)
+      - name: Build kernel
         run: |
           make -j$(nproc) ARCH=arm64 CROSS_COMPILE=${{ env.CROSS_COMPILE }} Image.gz-dtb
 
-      - name: Pack AnyKernel3 (no modules, stock WiFi)
+      - name: Pack AnyKernel
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
           cp arch/arm64/boot/Image.gz-dtb anykernel/
@@ -106,7 +103,7 @@ EOF
           sed -i 's|BLOCK=.*|BLOCK=/dev/block/bootdevice/by-name/boot|' anykernel.sh
           zip -r9 OP5T-Kernel-ZRAM-StockWiFi.zip * -x .git README.md
 
-      - name: Upload final kernel zip
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: OP5T-Kernel-ZRAM-StockWiFi
