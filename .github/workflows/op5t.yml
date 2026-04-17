@@ -24,7 +24,6 @@ jobs:
 
       - name: Download toolchain (Tsinghua mirror, no error)
         run: |
-          # Use Tsinghua mirror, git clone is more stable
           git clone --depth=1 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9.git toolchain
           export CROSS_COMPILE=$PWD/toolchain/bin/aarch64-linux-android-
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
@@ -33,23 +32,23 @@ jobs:
         run: |
           export CROSS_COMPILE=$CROSS_COMPILE
           make ARCH=arm64 op5-perf_defconfig
-          # Enable ZRAM Writeback config
-          sed -i '/CONFIG_ZRAM_WRITEBACK/d' .config
-          echo "CONFIG_ZRAM=y" >> .config
-          echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
-          echo "CONFIG_ZSMALLOC=y" >> .config
-          echo "CONFIG_TRANSPARENT_HUGEPAGE=y" >> .config
-          make ARCH=arm64 olddefconfig
+          # Enable ZRAM Writeback config, .config is in out/ directory!
+          sed -i '/CONFIG_ZRAM_WRITEBACK/d' out/.config
+          echo "CONFIG_ZRAM=y" >> out/.config
+          echo "CONFIG_ZRAM_WRITEBACK=y" >> out/.config
+          echo "CONFIG_ZSMALLOC=y" >> out/.config
+          echo "CONFIG_TRANSPARENT_HUGEPAGE=y" >> out/.config
+          make ARCH=arm64 O=out olddefconfig
 
       - name: Build kernel (only Image.gz-dtb, no modules to keep WiFi stock)
         run: |
           export CROSS_COMPILE=$CROSS_COMPILE
-          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE Image.gz-dtb
+          make -j$(nproc) ARCH=arm64 O=out CROSS_COMPILE=$CROSS_COMPILE Image.gz-dtb
 
       - name: Pack flashable zip with AnyKernel3
         run: |
           git clone --depth=1 https://mirrors.tuna.tsinghua.edu.cn/git/osm0sis/AnyKernel3.git anykernel
-          cp arch/arm64/boot/Image.gz-dtb anykernel/
+          cp out/arch/arm64/boot/Image.gz-dtb anykernel/
           cd anykernel
           # Config for OP5T
           sed -i 's/device.name1=maguro/device.name1=cheeseburger/' anykernel.sh
