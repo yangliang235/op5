@@ -1,4 +1,3 @@
-# 构建OP5T内核 | 开启ZRAM回写 | 生成AnyKernel3刷机包
 name: Build OP5T Kernel (ZRAM Writeback)
 
 on:
@@ -12,7 +11,6 @@ jobs:
   build-kernel:
     runs-on: ubuntu-latest
     steps:
-      # 1. 检出内核源码
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
@@ -20,22 +18,15 @@ jobs:
           ref: blu_spark-10
           fetch-depth: 1
 
-      # 2. 安装编译依赖
       - name: Install build dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y \
-            git make gcc clang libncurses-dev \
-            bison flex libssl-dev bc zip unzip \
-            gcc-aarch64-linux-gnu
+          sudo apt-get install -y git make gcc libncurses-dev bison flex libssl-dev bc zip unzip gcc-aarch64-linux-gnu
 
-      # 3. 配置交叉编译器
       - name: Setup cross compiler
-        run: |
-          echo "TOOLCHAIN=/usr/bin/aarch64-linux-gnu-" >> $GITHUB_ENV
+        run: echo "TOOLCHAIN=/usr/bin/aarch64-linux-gnu-" >> $GITHUB_ENV
 
-      # 4. 配置内核 + 强制开启ZRAM回写
-      - name: Configure kernel (enable ZRAM writeback)
+      - name: Configure kernel
         run: |
           make ARCH=arm64 op5-perf_defconfig
           echo "CONFIG_ZRAM=y" >> out/.config
@@ -44,34 +35,21 @@ jobs:
           echo "=== ZRAM 配置验证 ==="
           grep -E "CONFIG_ZRAM|CONFIG_ZRAM_WRITEBACK" out/.config
 
-      # 5. 编译内核 + 模块
-      - name: Build kernel Image.gz-dtb and modules
+      - name: Build kernel
         run: |
           make -j$(nproc) ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} Image.gz-dtb
           make -j$(nproc) ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} modules
 
-      # 6. 拉取AnyKernel3并修改设备支持
-      - name: Prepare AnyKernel3 (add OP5/OP5T support)
+      - name: Prepare AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-          # 复制编译好的内核
           cp out/arch/arm64/boot/Image.gz-dtb anykernel/
-          # 安装内核模块到打包目录
           make ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} modules_install INSTALL_MOD_PATH=anykernel/modules
-
-          # 关键修改：在anykernel.sh中添加一加5/5T设备支持
-          # 一加5设备代号：cheeseburger；一加5T设备代号：dumpling
+          
+          # 精简版设备修改，单行命令，避免YML语法错误
           cd anykernel
-          # 替换默认设备校验部分，添加对cheeseburger和dumpling的支持
-          sed -i '/# Supported devices/,/^$/c\
-# Supported devices\n\
-if [ -z "$(grep -E "cheeseburger|dumpling" /proc/cpuinfo /proc/version /proc/devices /proc/partitions)" ]; then\n\
-    echo "Unsupported device, Aborting..."\n\
-    exit 1\n\
-fi\n\
-' anykernel.sh
+          sed -i 's/grep -E ".*" \/proc\/cpuinfo/grep -E "cheeseburger|dumpling" \/proc\/cpuinfo/' anykernel.sh
 
-      # 7. 生成带版本号的刷机包
       - name: Pack flashable zip
         run: |
           KERNEL_VERSION=$(make ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} kernelversion -s)
@@ -79,7 +57,6 @@ fi\n\
           ZIP_NAME="OP5T-Kernel-ZRAM-Writeback-v${KERNEL_VERSION}-$(date +%Y%m%d).zip"
           zip -r9 $ZIP_NAME * -x .git README.md *placeholder
 
-      # 8. 上传刷机包到Actions工件
       - name: Upload kernel flashable zip
         uses: actions/upload-artifact@v4
         with:
