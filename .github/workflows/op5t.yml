@@ -38,11 +38,9 @@ jobs:
       run: |
         cd ${GITHUB_WORKSPACE}
         
-        # 列出所有可用的 defconfig 文件
         echo "Available defconfigs:"
         ls arch/arm64/configs/*defconfig 2>/dev/null || ls arch/arm64/configs/*_defconfig 2>/dev/null
         
-        # 自动选择合适的 defconfig（优先级：blu_spark_defconfig > op5_defconfig > oneplus5_defconfig > 任意第一个）
         if [ -f arch/arm64/configs/blu_spark_defconfig ]; then
           DEFCONFIG=blu_spark_defconfig
         elif [ -f arch/arm64/configs/op5_defconfig ]; then
@@ -50,7 +48,6 @@ jobs:
         elif [ -f arch/arm64/configs/oneplus5_defconfig ]; then
           DEFCONFIG=oneplus5_defconfig
         else
-          # 获取第一个 *defconfig 文件
           DEFCONFIG=$(ls arch/arm64/configs/*defconfig 2>/dev/null | head -1 | xargs basename)
           if [ -z "$DEFCONFIG" ]; then
             echo "Error: No defconfig found in arch/arm64/configs/"
@@ -60,16 +57,9 @@ jobs:
         
         echo "Using defconfig: $DEFCONFIG"
         
-        # 加载默认配置
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- $DEFCONFIG
-        
-        # 启用 ZRAM 回写功能
         echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
-        
-        # 解决依赖并生成最终配置
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-        
-        # 验证选项已开启
         grep CONFIG_ZRAM_WRITEBACK .config || echo "Warning: CONFIG_ZRAM_WRITEBACK not found"
 
     - name: Build kernel and dtbs
@@ -97,50 +87,24 @@ jobs:
         git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
         cp -rf AnyKernel3/* ${GITHUB_WORKSPACE}/AnyKernel3/ 2>/dev/null || true
 
-    - name: Customize AnyKernel3 for3 for OnePlus OnePlus 5/T
- 5/T
-      run      run: |
-        cd: |
-        cd ${G ${GITHUBITHUB_WORK_WORKSPACESPACE}/Any}/AnyKernel3
-Kernel3
-        # 修改设备名称
-        sed        # 修改设备名称
-        sed -i -i 's/device.name1 's=.*/device.name1/device.name1=.*/device=One.name1Plus5/' any=OnePlus5kernel.sh/' anykernel.sh
-       
-        sed - sed -i 'i 's/device.names/device.name2=2=.*/device.name2=.*/device.nameOnePlus2=OnePlus5T5T/' any/' anykernel.shkernel.sh
-       
-        #  # 设置内核设置内核分区
-分区
-        sed        sed -i -i 's 's|block|block=/dev=/dev/block/bootdevice/by/block/boot-name/device/by-name/.*|block=/.*|dev/block=/dev/block/bblock/bootdevice/by-nameootdevice/by-name/kernel/kernel|'|' anykernel anykernel.sh
-.sh
-        #        # 添加 添加标记
-标记
-        echo        echo "# Z "# ZRAM writeRAM writeback enabledback enabled in kernel in kernel config" config" >> any >> anykernel.shkernel.sh
+    - name: Customize AnyKernel3 for OnePlus 5/T
+      run: |
+        cd ${GITHUB_WORKSPACE}/AnyKernel3
+        sed -i 's/device.name1=.*/device.name1=OnePlus5/' anykernel.sh
+        sed -i 's/device.name2=.*/device.name2=OnePlus5T/' anykernel.sh
+        sed -i 's|block=/dev/block/bootdevice/by-name/.*|block=/dev/block/bootdevice/by-name/kernel|' anykernel.sh
+        echo "# ZRAM writeback enabled in kernel config" >> anykernel.sh
 
-   
+    - name: Create flashable ZIP
+      run: |
+        cd ${GITHUB_WORKSPACE}/AnyKernel3
+        zip -r9 ../op5_kernel_zram_writeback_$(date +%Y%m%d_%H%M%S).zip * -x .git README.md
+        mkdir -p ${GITHUB_WORKSPACE}/output
+        mv ../op5_kernel_zram_writeback_*.zip ${GITHUB_WORKSPACE}/output/
 
-    - name - name: Create: Create flashable flashable ZIP
- ZIP
-      run      run: |
-: |
-        cd        cd ${G ${GITHUB_WORKITHUB_WORKSPACESPACE}/Any}/AnyKernelKernel3
-        zip -r3
-        zip9 ../ -r9 ../op5op5_kernel_zram_kernel_zram_writeback_$(_writeback_$(date +date +%Y%m%Y%m%d_%d_%H%M%S).zip%H%M * -x .%S).zip * -x .git README.mdgit READ
-        mkdirME.md
-        -p mkdir ${GITHUB -p ${G_WORKITHUBSPACE}/_WORKSPACE}/outputoutput
-       
-        mv ../ mv ../op5op5_kernel_kernel_zram_zram_writeback_writeback_*._*.zip ${zip ${GITHGITHUB_WORKSPUB_WORKSPACE}/output/
-
-ACE}/    -output/
-
-    - name: Upload flash name:able ZIP Upload flashable ZIP
-     
-      uses: uses: actions/ actions/upload-artifact@upload-artifact@v4v4
-     
+    - name: Upload flashable ZIP
+      uses: actions/upload-artifact@v4
       with:
- with:
-        name        name: op: op5-k5-kernel-flernel-flashableashable-zip-zip
-       
-        path: path: output/* output/*..zipzip
-       
-        retention-d retention-days:ays: 7 7
+        name: op5-kernel-flashable-zip
+        path: output/*.zip
+        retention-days: 7
