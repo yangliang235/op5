@@ -34,6 +34,12 @@ jobs:
           lzop \
           xz-utils
 
+    - name: Clean kernel source tree
+      run: |
+        cd ${GITHUB_WORKSPACE}
+        # 清理所有生成的文件，确保干净的构建环境
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- mrproper
+
     - name: Configure kernel (enable ZRAM writeback)
       run: |
         cd ${GITHUB_WORKSPACE}
