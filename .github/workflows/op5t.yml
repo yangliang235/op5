@@ -22,7 +22,7 @@ jobs:
           ref: blu_spark-10
           fetch-depth: 1
 
-      # 2. 安装编译依赖（已修复包名错误 + 32位兼容库）
+      # 2. 安装编译依赖：使用新版系统交叉编译器，支持新编译选项
       - name: Install build dependencies
         run: |
           # 使用 apt-get 替代 apt，消除CLI不稳定警告
@@ -30,21 +30,19 @@ jobs:
           sudo apt-get install -y \
             git make gcc clang libncurses-dev \
             bison flex libssl-dev bc zip unzip \
-            libc6-i386 lib32stdc++6 # 32位兼容库，支持旧版交叉工具链
+            gcc-aarch64-linux-gnu # 安装Ubuntu官方新版ARM64交叉编译器，支持新编译选项
 
-      # 3. 下载安卓专用4.9交叉编译工具链（兼容旧内核）
-      - name: Download ARM64 cross toolchain
+      # 3. 配置交叉编译器：使用系统新版编译器，替代旧的4.9版本
+      - name: Setup cross compiler
         run: |
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain
-          echo "TOOLCHAIN=$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-" >> $GITHUB_ENV
-          echo "PATH=$GITHUB_WORKSPACE/toolchain/bin:$PATH" >> $GITHUB_ENV
+          echo "TOOLCHAIN=/usr/bin/aarch64-linux-gnu-" >> $GITHUB_ENV
 
       # 4. 配置内核 + 强制开启ZRAM回写
       - name: Configure kernel (enable ZRAM writeback)
         run: |
           # 加载OP5/OP5T专用性能版默认配置（自动输出到out/目录）
           make ARCH=arm64 op5-perf_defconfig
-          # 强制开启ZRAM和回写功能：无论原有配置是否存在，直接追加到.config末尾，确保一定生效
+          # 强制开启ZRAM和回写功能，无论原有配置是否存在，直接追加到.config末尾，确保一定生效
           echo "CONFIG_ZRAM=y" >> out/.config
           echo "CONFIG_ZRAM_WRITEBACK=y" >> out/.config
           # 同步配置，自动补全所有依赖项
