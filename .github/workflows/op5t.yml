@@ -34,17 +34,13 @@ jobs:
           lzop \
           xz-utils
 
-    - name: Deep clean kernel source tree
+    - name: Clean kernel source tree
       run: |
         cd ${GITHUB_WORKSPACE}
-        # 删除所有可能的输出目录
+        # 只删除可能存在的输出目录，不删除源码文件
         rm -rf out build
-        # 清理所有自动生成的文件
+        # 使用 mrproper 清理所有生成的文件（保留源码目录结构）
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- mrproper
-        # 手动删除残留
-        rm -f .config .config.old .version Module.symvers
-        rm -rf include/config include/generated scripts/basic scripts/kconfig
-        rm -rf arch/arm64/include/generated
 
     - name: Configure kernel (enable ZRAM writeback)
       run: |
@@ -69,7 +65,7 @@ jobs:
         
         echo "Using defconfig: $DEFCONFIG"
         
-        # 强制在当前目录编译（O=.）
+        # 强制在当前目录编译（避免自动创建 out 目录）
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=. $DEFCONFIG
         echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=. olddefconfig
@@ -78,7 +74,6 @@ jobs:
     - name: Build kernel and dtbs
       run: |
         cd ${GITHUB_WORKSPACE}
-        # 强制在当前目录编译（O=.）
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=. -j$(nproc)
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=. dtbs
 
