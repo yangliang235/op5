@@ -1,131 +1,75 @@
-name: Build Kernel & Create Flashable ZIP (ZRAM Writeback)
+# 构建OP5T内核 | 开启ZRAM回写 | 生成AnyKernel3刷机包
+name: Build OP5T Kernel (ZRAM Writeback)
 
+# 触发条件：手动触发、push代码、PR合并
 on:
+  workflow_dispatch: # 手动触发
   push:
-    branches: [ "master", "main" ]
+    branches: [ blu_spark-10 ] # 匹配你的内核分支
   pull_request:
-    branches: [ "master", "main" ]
-  workflow_dispatch:
+    branches: [ blu_spark-10 ]
 
+# 构建任务
 jobs:
-  build:
-    runs-on: ubuntu-22.04
+  build-kernel:
+    runs-on: ubuntu-latest
     steps:
-    - name: Checkout kernel source
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
-
-    - name: Install cross-compilation toolchain
-      run: |
-        sudo apt update
-        sudo apt install -y \
-          build-essential \
-          flex \
-          bison \
-          bc \
-          kmod \
-          cpio \
-          device-tree-compiler \
-          gcc-aarch64-linux-gnu \
-          libssl-dev \
-          libelf-dev \
-          lz4 \
-          lzop \
-          xz-utils
-
-    - name: Deep clean source tree (remove all untracked files)
-      run: |
-        cd ${GITHUB_WORKSPACE}
-        # 删除所有未跟踪的文件和目录，确保源码绝对干净
-        git clean -fdx
-        # 额外运行 mrproper 以清除任何遗留的生成文件
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- mrproper
-
-    - name: Configure kernel (enable ZRAM writeback)
-      run: |
-        cd ${GITHUB_WORKSPACE}
-        
-        echo "Available defconfigs:"
-        ls arch/arm64/configs/*defconfig 2>/dev/null
-        
-        if [ -f arch/arm64/configs/blu_spark_defconfig ]; then
-          DEFCONFIG=blu_spark_defconfig
-        elif [ -f arch/arm64/configs/op5_defconfig ]; then
-          DEFCONFIG=op5_defconfig
-        elif [ -f arch/arm64/configs/oneplus5_defconfig ]; then
-          DEFCONFIG=oneplus5_defconfig
-        else
-          DEFCONFIG=$(ls arch/arm64/configs/*defconfig 2>/dev/null | head -1 | xargs basename)
-          if [ -z "$DEFCONFIG" ]; then
-            echo "Error: No defconfig found in arch/arm64/configs/"
-            exit 1
-          fi
-        fi
-        
-        echo "Using defconfig: $DEFCONFIG"
-        
-        # 创建分离构建目录
-        mkdir -p build
-        # 配置内核（所有输出在 build/ 下）
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=build $DEFCONFIG
-        # 启用 ZRAM 回写功能
-        echo "CONFIG_ZRAM_WRITEBACK=y" >> build/.config
-        # 解决依赖并生成最终配置
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=build olddefconfig
-        # 验证选项已开启
-        grep CONFIG_ZRAM_WRITEBACK build/.config || echo "Warning: CONFIG_ZRAM_WRITEBACK not found"
-
-    - name: Build kernel and dtbs
-      run: |
-        cd ${GITHUB_WORKSPACE}
-        # 编译内核
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=build -j$(nproc)
-        # 编译设备树
-        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=build dtbs
-
-    - name: Prepare kernel image for AnyKernel3
-      run: |
-        cd ${GITHUB_WORKSPACE}
-        mkdir -p AnyKernel3
-        # 从构建目录复制内核镜像
-        if [ -f build/arch/arm64/boot/Image.gz-dtb ]; then
-          cp build/arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
-        elif [ -f build/arch/arm64/boot/Image.gz ]; then
-          cp build/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
-          cat build/arch/arm64/boot/dts/qcom/*.dtb > AnyKernel3/dtb 2>/dev/null || true
-        else
-          cp build/arch/arm64/boot/Image AnyKernel3/Image
-          cat build/arch/arm64/boot/dts/qcom/*.dtb > AnyKernel3/dtb 2>/dev/null || true
-        fi
-
-    - name: Clone AnyKernel3 template
-      run: |
-        git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
-        cp -rf AnyKernel3/* ${GITHUB_WORKSPACE}/AnyKernel3/ 2>/dev/null || true
-
-    - name: Customize AnyKernel3 for OnePlus 5/T
-      run: |
-        cd ${GITHUB_WORKSPACE}/AnyKernel3
-        sed -i 's/device.name1=.*/device.name1=OnePlus5/' anykernel.sh
-        sed -i 's/device.name2=.*/device.name2=OnePlus5T/' anykernel.sh
-        sed -i 's|block=/dev/block/bootdevice/by-name/.*|block=/dev/block/bootdevice/by-name/kernel|' anykernel.sh
-        echo "# ZRAM writeback enabled in kernel config" >> anykernel.sh
-
-    - name: Create flashable ZIP
-      run: |
-        cd ${GITHUB_WORKSPACE}/AnyKernel3
-        zip -r9 ../op5_kernel_zram_writeback_$(date +%Y%m%d_%H%M%S).zip * -x .git README.md
-        mkdir -p ${GITHUB_WORKSPACE}/output
-        mv ../op5_kernel_zram_writeback_*.zip ${GITHUB_WORKSPACE}/output/
-
-    - name: Upload flashable ZIP
-      uses: actions/upload-artifact@v4ifact@v4
-     
-      with:
+      # 1. 检出内核源码
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
         with:
-        name name: op: op5-kernel-flashable5-kernel-flashable-zip
-        path: output/*-zip
-        path: output/*.zip.zip
-       
-        retention-d retention-days: 7ays: 7
+          repository: yangliang235/op5
+          ref: blu_spark-10
+          fetch-depth: 1
+
+      # 2. 安装编译依赖
+      - name: Install build dependencies
+        run: |
+          sudo apt update -y
+          sudo apt install -y \
+            git make gcc clang libncurses-dev \
+            bison flex libssl-dev bc zip unzip \
+            aarch64-linux-gnu-gcc crossbuild-essential-arm64
+
+      # 3. 下载安卓交叉编译工具链
+      - name: Download ARM64 cross toolchain
+        run: |
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git toolchain
+          echo "TOOLCHAIN=$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-" >> $GITHUB_ENV
+
+      # 4. 配置内核 + 强制开启ZRAM回写
+      - name: Configure kernel (enable ZRAM writeback)
+        run: |
+          # 加载一加5/5T默认配置
+          make ARCH=arm64 oneplus5_defconfig
+          # 开启ZRAM回写核心配置
+          sed -i 's/# CONFIG_ZRAM_WRITEBACK is not set/CONFIG_ZRAM_WRITEBACK=y/' .config
+          sed -i 's/CONFIG_ZRAM_WRITEBACK=n/CONFIG_ZRAM_WRITEBACK=y/' .config
+          # 同步配置
+          make ARCH=arm64 olddefconfig
+
+      # 5. 编译内核
+      - name: Build kernel Image.gz-dtb
+        run: |
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} Image.gz-dtb
+
+      # 6. 拉取AnyKernel3打包脚本（生成刷机包）
+      - name: Prepare AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+          # 复制编译好的内核到打包目录
+          cp arch/arm64/boot/Image.gz-dtb anykernel/
+
+      # 7. 生成OP5T专用刷机包
+      - name: Pack flashable zip
+        run: |
+          cd anykernel
+          # 重命名刷机包
+          zip -r9 OP5T-Kernel-ZRAM-Writeback.zip * -x .git README.md *placeholder
+
+      # 8. 上传刷机包到Actions工件
+      - name: Upload kernel flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: OP5T-Kernel-ZRAM-Writeback
+          path: anykernel/OP5T-Kernel-ZRAM-Writeback.zip
