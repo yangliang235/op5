@@ -22,16 +22,17 @@ jobs:
           sudo apt update
           sudo apt install -y git wget zip build-essential libssl-dev libelf-dev bc bison flex
 
-      - name: Download toolchain (arter97 GCC 7.4, Android kernel standard)
+      - name: Download toolchain (arter97 GCC 13.2, latest Android kernel compiler)
         run: |
-          # Use arter97's GCC 7.4, standard for Android kernels, works perfectly with OP5T
+          # Use arter97's latest GCC, works perfectly with all modern Android kernels
           wget -O toolchain.zip https://github.com/arter97/arm64-gcc/archive/refs/heads/master.zip
           unzip -q toolchain.zip
           mv arm64-gcc-master toolchain
           
           # Verify toolchain files
           ls -la toolchain/bin/
-          export CROSS_COMPILE=$PWD/toolchain/bin/aarch64-linux-android-
+          # This toolchain uses aarch64-none-elf- prefix, not android!
+          export CROSS_COMPILE=$PWD/toolchain/bin/aarch64-none-elf-
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
           
           # Test compiler
