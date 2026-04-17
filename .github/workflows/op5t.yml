@@ -20,13 +20,24 @@ jobs:
       run: |
         sudo apt update
         sudo apt install -y \
-          build-essential flex bison bc kmod cpio device-tree-compiler \
-          gcc-aarch64-linux-gnu libssl-dev libelf-engine
+          build-essential \
+          flex \
+          bison \
+          bc \
+          kmod \
+          cpio \
+          device-tree-compiler \
+          gcc-aarch64-linux-gnu \
+          libssl-dev \
+          libelf-dev \
+          lz4 \
+          lzop \
+          xz-utils
 
     - name: Configure kernel (enable ZRAM writeback)
       run: |
         cd ${GITHUB_WORKSPACE}
-        # 根据实际 defconfig 文件名修改（常见为 op5_defconfig 或 blu_spark_defconfig）
+        # 请确认 defconfig 文件名，常见为 op5_defconfig 或 blu_spark_defconfig
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- op5_defconfig
         echo "CONFIG_ZRAM_WRITEBACK=y" >> .config
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
@@ -41,6 +52,8 @@ jobs:
     - name: Prepare kernel image for AnyKernel3
       run: |
         cd ${GITHUB_WORKSPACE}
+        # 创建 AnyKernel3 目录
+        mkdir -p AnyKernel3
         # 寻找生成的镜像文件，优先级：Image.gz-dtb > Image.gz > Image
         if [ -f arch/arm64/boot/Image.gz-dtb ]; then
           cp arch/arm64/boot/Image.gz-dtb AnyKernel3/Image.gz-dtb
@@ -56,25 +69,24 @@ jobs:
     - name: Clone AnyKernel3 template
       run: |
         git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
-        # 准备 AnyKernel3 目录结构
-        cp -rf AnyKernel3/* ${GITHUB_WORKSPACE}/AnyKernel3/
+        # 将模板文件复制到工作区的 AnyKernel3 目录（保留已有内核镜像）
+        cp -rf AnyKernel3/* ${GITHUB_WORKSPACE}/AnyKernel3/ || true
 
     - name: Customize AnyKernel3 for OnePlus 5/T
       run: |
         cd ${GITHUB_WORKSPACE}/AnyKernel3
-        # 修改 anykernel.sh 中的设备名称和分区（示例）
+        # 修改 anykernel.sh 中的设备名称和分区
         sed -i 's/device.name1=.*/device.name1=OnePlus5/' anykernel.sh
         sed -i 's/device.name2=.*/device.name2=OnePlus5T/' anykernel.sh
-        # 设置正确的内核分区（OnePlus 5/T 为 /dev/block/bootdevice/by-name/kernel）
-        sed -i 's/block=.*/block=\/dev\/block\/bootdevice\/by-name\/kernel/' anykernel.sh
-        # 可选：添加对 dtb 的支持
-        echo "## ZRAM writeback enabled" >> anykernel.sh
+        # 设置内核分区（OnePlus 5/T 为 kernel 分区）
+        sed -i 's|block=/dev/block/bootdevice/by-name/.*|block=/dev/block/bootdevice/by-name/kernel|' anykernel.sh
+        # 添加注释标记 ZRAM 回写已开启
+        echo "# ZRAM writeback enabled in kernel config" >> anykernel.sh
 
     - name: Create flashable ZIP
       run: |
         cd ${GITHUB_WORKSPACE}/AnyKernel3
         zip -r9 ../op5_kernel_zram_writeback_$(date +%Y%m%d_%H%M%S).zip * -x .git README.md
-        # 移动到单独的 artifacts 目录
         mkdir -p ${GITHUB_WORKSPACE}/output
         mv ../op5_kernel_zram_writeback_*.zip ${GITHUB_WORKSPACE}/output/
 
