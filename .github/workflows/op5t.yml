@@ -69,9 +69,10 @@ jobs:
       # 7. 生成带版本号的刷机包
       - name: Pack flashable zip
         run: |
-          cd anykernel
-          # 自动获取内核版本 + 日期，生成唯一包名
+          # 修复：先在源码根目录获取内核版本，再cd到anykernel！
           KERNEL_VERSION=$(make ARCH=arm64 CROSS_COMPILE=${{ env.TOOLCHAIN }} kernelversion -s)
+          cd anykernel
+          # 生成唯一包名
           ZIP_NAME="OP5T-Kernel-ZRAM-Writeback-v${KERNEL_VERSION}-$(date +%Y%m%d).zip"
           # 打包
           zip -r9 $ZIP_NAME * -x .git README.md *placeholder
