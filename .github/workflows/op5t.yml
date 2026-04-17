@@ -22,22 +22,26 @@ jobs:
           sudo apt update
           sudo apt install -y git wget zip build-essential libssl-dev libelf-dev bc bison flex
 
-      - name: Download toolchain (Google official source, 100% correct)
+      - name: Download toolchain (GitHub hosted, 100% accessible for runner)
         run: |
-          # Use Google official toolchain, no mirror error
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 toolchain
-          # Check if compiler exists
+          # Download prebuilt toolchain zip from GitHub, no clone issues
+          wget -O toolchain.zip https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/cm-14.1.zip
+          unzip -q toolchain.zip
+          mv android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9-cm-14.1 toolchain
+          
+          # Verify toolchain files
           ls -la toolchain/bin/
           export CROSS_COMPILE=$PWD/toolchain/bin/aarch64-linux-android-
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
-          # Verify compiler works
+          
+          # Test compiler
           $CROSS_COMPILE-gcc --version
 
       - name: Configure kernel
         run: |
           export CROSS_COMPILE=$CROSS_COMPILE
           make ARCH=arm64 op5-perf_defconfig
-          # Enable ZRAM Writeback config, .config is in out/ directory!
+          # Enable ZRAM Writeback config
           sed -i '/CONFIG_ZRAM_WRITEBACK/d' out/.config
           echo "CONFIG_ZRAM=y" >> out/.config
           echo "CONFIG_ZRAM_WRITEBACK=y" >> out/.config
@@ -55,7 +59,7 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
           cp out/arch/arm64/boot/Image.gz-dtb anykernel/
           cd anykernel
-          # Config for OP5T
+          # Config for OP5/OP5T
           sed -i 's/device.name1=maguro/device.name1=cheeseburger/' anykernel.sh
           sed -i 's/device.name2=toro/device.name2=dumpling/' anykernel.sh
           sed -i 's/do.modules=1/do.modules=0/' anykernel.sh
