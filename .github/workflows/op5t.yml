@@ -22,11 +22,10 @@ jobs:
           sudo apt update
           sudo apt install -y git wget zip build-essential libssl-dev libelf-dev bc bison flex
 
-      - name: Download toolchain (Gitee mirror, fast speed)
+      - name: Download toolchain (Tsinghua mirror, no error)
         run: |
-          wget -q -O toolchain.zip https://gitee.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/master.zip
-          unzip -q toolchain.zip
-          mv android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9-master toolchain
+          # Use Tsinghua mirror, git clone is more stable
+          git clone --depth=1 https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9.git toolchain
           export CROSS_COMPILE=$PWD/toolchain/bin/aarch64-linux-android-
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
 
@@ -49,9 +48,7 @@ jobs:
 
       - name: Pack flashable zip with AnyKernel3
         run: |
-          wget -q -O anykernel.zip https://gitee.com/osm0sis/AnyKernel3/archive/master.zip
-          unzip -q anykernel.zip
-          mv AnyKernel3-master anykernel
+          git clone --depth=1 https://mirrors.tuna.tsinghua.edu.cn/git/osm0sis/AnyKernel3.git anykernel
           cp arch/arm64/boot/Image.gz-dtb anykernel/
           cd anykernel
           # Config for OP5T
