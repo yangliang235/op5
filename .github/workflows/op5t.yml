@@ -42,8 +42,8 @@ jobs:
       # 4. 配置内核 + 强制开启ZRAM回写
       - name: Configure kernel (enable ZRAM writeback)
         run: |
-          # 加载一加5/5T默认配置
-          make ARCH=arm64 oneplus5_defconfig
+          # 加载OP5/OP5T专用性能版默认配置（已修复defconfig名字错误）
+          make ARCH=arm64 op5-perf_defconfig
           # 强制开启ZRAM回写，无论原有配置是什么
           sed -i '/CONFIG_ZRAM_WRITEBACK/c\CONFIG_ZRAM_WRITEBACK=y' .config
           # 同步配置，自动补全依赖项
