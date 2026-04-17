@@ -24,6 +24,9 @@
 #include <linux/device.h>
 #include <linux/genhd.h>
 #include <linux/highmem.h>
+#ifdef CONFIG_ZRAM_WRITEBACK
+#include <linux/swap.h>
+#endif
 #include <linux/slab.h>
 #include <linux/backing-dev.h>
 #include <linux/string.h>
@@ -1434,15 +1437,11 @@ static int zram_rw_page(struct block_device *bdev, sector_t sector,
 	bv.bv_len = PAGE_SIZE;
 	bv.bv_offset = 0;
 
-	ret = zram_bvec_rw(zram, &bv, index, offset, rw, NULL);
+	ret = zram_bvec_rw(zram, &bv, index, 0, rw, NULL);
 out:
 	/*
-	 * If I/O fails, just return error(ie, non-zero) without
-	 * calling page_endio.
-	 * It causes resubmit the I/O with bio request by upper functions
-	 * of rw_page(e.g., swap_readpage, __swap_writepage) and
-	 * bio->bi_end_io does things to handle the error
-	 * (e.g., SetPageError, set_page_dirty and extra works).
+	 * If I/O fails, just return error(ie, non-zero), otherwise
+	 * page_endio.
 	 */
 	if (unlikely(ret < 0))
 		return ret;
@@ -1514,7 +1513,7 @@ static ssize_t disksize_store(struct device *dev,
 		goto out_unlock;
 	}
 
-	comp = zcomp_create(zram->compressor);
+	comp = zcomp_create(zram->compressor, NULL);
 	if (IS_ERR(comp)) {
 		pr_err("Cannot initialise %s compressing backend\n",
 				zram->compressor);
@@ -1615,6 +1614,8 @@ static DEVICE_ATTR_RW(max_comp_streams);
 static DEVICE_ATTR_RW(comp_algorithm);
 #ifdef CONFIG_ZRAM_WRITEBACK
 static DEVICE_ATTR_RW(backing_dev);
+static DEVICE_ATTR_WO(writeback);
+static DEVICE_ATTR_RW(watermark);
 #endif
 
 static struct attribute *zram_disk_attrs[] = {
@@ -1628,6 +1629,8 @@ static struct attribute *zram_disk_attrs[] = {
 	&dev_attr_comp_algorithm.attr,
 #ifdef CONFIG_ZRAM_WRITEBACK
 	&dev_attr_backing_dev.attr,
+	&dev_attr_writeback.attr,
+	&dev_attr_watermark.attr,
 #endif
 	&dev_attr_io_stat.attr,
 	&dev_attr_mm_stat.attr,
@@ -1659,8 +1662,10 @@ static int zram_add(void)
 		return -ENOMEM;
 
 	ret = idr_alloc(&zram_index_idr, zram, 0, 0, GFP_KERNEL);
-	if (ret < 0)
+	if (ret < 0) {
+		pr_err("Error allocating idr %d\n", ret);
 		goto out_free_dev;
+	}
 	device_id = ret;
 
 	init_rwsem(&zram->init_lock);
@@ -1670,7 +1675,7 @@ static int zram_add(void)
 		pr_err("Error allocating disk queue for device %d\n",
 			device_id);
 		ret = -ENOMEM;
-		goto out_free_idr;
+		goto out_free_queue;
 	}
 
 	blk_queue_make_request(queue, zram_make_request);
@@ -1713,10 +1718,7 @@ static int zram_add(void)
 	/*
 	 * zram_bio_discard() will clear all logical blocks if logical block
 	 * size is identical with physical block size(PAGE_SIZE). But if it is
-	 * different, we will skip discarding some parts of logical blocks in
-	 * the part of the request range which isn't aligned to physical block
-	 * size.  So we can't ensure that all discarded logical blocks are
-	 * zeroed.
+	 * different, we will skip discarding some parts of logical blocks.
 	 */
 	if (ZRAM_LOGICAL_BLOCK_SIZE == PAGE_SIZE)
 		zram->disk->queue->limits.discard_zeroes_data = 1;
@@ -1741,7 +1743,7 @@ out_free_idr:
 	idr_remove(&zram_index_idr, device_id);
 out_free_dev:
 	kfree(zram);
-	return ret;
+	return -1;
 }
 
 static int zram_remove(struct zram *zram)
@@ -1753,7 +1755,7 @@ static int zram_remove(struct zram *zram)
 		return -ENOMEM;
 
 	mutex_lock(&bdev->bd_mutex);
-	if (bdev->bd_openers || zram->claim) {
+	if (bdev->bd_openers) {
 		mutex_unlock(&bdev->bd_mutex);
 		bdput(bdev);
 		return -EBUSY;
@@ -1772,7 +1774,7 @@ static int zram_remove(struct zram *zram)
 	pr_info("Removed device: %s\n", zram->disk->disk_name);
 
 	del_gendisk(zram->disk);
-	blk_cleanup_queue(zram->disk->queue);
+	blkdev_put(zram->disk, bdev);
 	put_disk(zram->disk);
 	kfree(zram);
 	return 0;
@@ -1780,8 +1782,7 @@ static int zram_remove(struct zram *zram)
 
 /* zram-control sysfs attributes */
 static ssize_t hot_add_show(struct class *class,
-			struct class_attribute *attr,
-			char *buf)
+			struct class_attribute *attr, char *buf)
 {
 	int ret;
 
@@ -1795,14 +1796,12 @@ static ssize_t hot_add_show(struct class *class,
 }
 
 static ssize_t hot_remove_store(struct class *class,
-			struct class_attribute *attr,
-			const char *buf,
-			size_t count)
+			struct class_attribute *attr, const char *buf, size_t count)
 {
 	struct zram *zram;
 	int ret, dev_id;
 
-	/* dev_id is gendisk->first_minor, which is `int' */
+	/* dev_id is gendisk->first_minor, which is `int` */
 	ret = kstrtoint(buf, 10, &dev_id);
 	if (ret)
 		return ret;
@@ -1827,8 +1826,8 @@ static ssize_t hot_remove_store(struct class *class,
 /*
  * NOTE: hot_add attribute is not the usual read-only sysfs attribute. In a
  * sense that reading from this file does alter the state of your system -- it
- * creates a new un-initialized zram device and returns back this device's
- * device_id (or an error code if it fails to create a new device).
+ * creates a new un-initialized device and returns back this device's
+ * device_id (or an error code if it fails to create it).
  */
 static struct class_attribute zram_control_class_attrs[] = {
 	__ATTR(hot_add, 0400, hot_add_show, NULL),
@@ -1901,6 +1900,11 @@ module_exit(zram_exit);
 
 module_param(num_devices, uint, 0);
 MODULE_PARM_DESC(num_devices, "Number of pre-created zram devices");
+
+#ifdef CONFIG_ZRAM_WRITEBACK
+static unsigned int zram_watermark;
+module_param_named(watermark, zram_watermark, uint, 0644);
+#endif
 
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Nitin Gupta <ngupta@vflare.org>");
