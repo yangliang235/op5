@@ -22,38 +22,40 @@ jobs:
           sudo apt update
           sudo apt install -y git wget zip build-essential libssl-dev libelf-dev bc bison flex
 
-      - name: Download toolchain (arter97 GCC 13.2)
+      - name: Download toolchain (Proton Clang 17, 安卓内核通用)
         run: |
-          wget -O toolchain.zip https://github.com/arter97/arm64-gcc/archive/refs/heads/master.zip
-          unzip -q toolchain.zip
-          mv arm64-gcc-master toolchain
+          wget -O clang.tar.gz https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
+          tar xf clang.tar.gz
+          mv proton-clang-master toolchain
           
           ls -la toolchain/bin/
-          export CROSS_COMPILE=$PWD/toolchain/bin/aarch64-none-elf-
+          export CROSS_COMPILE=$PWD/toolchain/bin/aarch64-linux-gnu-
+          export CC=$PWD/toolchain/bin/clang
           echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
+          echo "CC=$CC" >> $GITHUB_ENV
           
-          $CROSS_COMPILE"gcc" --version
+          $CC --version
 
       - name: Configure kernel
         run: |
-          export CROSS_COMPILE=$CROSS_COMPILE
           make ARCH=arm64 op5-perf_defconfig
+          # 手机不需要ACPI，直接关掉避免编译错误
+          sed -i 's/CONFIG_ACPI=y/CONFIG_ACPI=n/' out/.config
           make ARCH=arm64 O=out olddefconfig
 
       - name: Build kernel
         run: |
           export CROSS_COMPILE=$CROSS_COMPILE
-          # 加两个关键参数：
-          # 1. -DACPI_MACHINE_WIDTH=64 解决ACPI的所有头文件/类型错误
-          # 2. -Wno-error 关掉警告报错
-          make -j$(nproc) ARCH=arm64 O=out CROSS_COMPILE=$CROSS_COMPILE KCFLAGS="-DACPI_MACHINE_WIDTH=64 -Wno-error" Image.gz-dtb
+          export CC=$CC
+          # 用Clang编译，兼容性更好，不会有GCC的那些老代码警告问题
+          make -j$(nproc) ARCH=arm64 O=out CROSS_COMPILE=$CROSS_COMPILE CC=$CC KCFLAGS="-Wno-error" Image.gz-dtb
 
       - name: Pack flashable zip with AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
           cp out/arch/arm64/boot/Image.gz-dtb anykernel/
           cd anykernel
-          # Config for OP5/OP5T
+          # 适配OP5/OP5T，不刷模块，保证WiFi正常
           sed -i 's/device.name1=maguro/device.name1=cheeseburger/' anykernel.sh
           sed -i 's/device.name2=toro/device.name2=dumpling/' anykernel.sh
           sed -i 's/do.modules=1/do.modules=0/' anykernel.sh
