@@ -1,69 +1,82 @@
-name: Build OP5T Kernel with ZRAM Writeback
+name: Build Kernel
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ blu_spark-10 ]
+    branches: [ kernel4.4.258 ]
   pull_request:
-    branches: [ blu_spark-10 ]
+    branches: [ kernel4.4.258 ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: blu_spark-10
-          fetch-depth: 0
 
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y git wget zip build-essential libssl-dev libelf-dev bc bison flex
+          sudo apt install -y git wget unzip build-essential libssl-dev libelf-dev bison flex
 
-      - name: Download toolchain (Proton Clang 17, 安卓内核通用)
+      - name: Download LLVM toolchain
         run: |
-          wget -O clang.tar.gz https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz
-          tar xf clang.tar.gz
-          mv proton-clang-master toolchain
-          
-          ls -la toolchain/bin/
-          export CROSS_COMPILE=$PWD/toolchain/bin/aarch64-linux-gnu-
-          export CC=$PWD/toolchain/bin/clang
-          echo "CROSS_COMPILE=$CROSS_COMPILE" >> $GITHUB_ENV
-          echo "CC=$CC" >> $GITHUB_ENV
-          
-          $CC --version
+          git clone https://github.com/kdrag0n/proton-clang llvm --depth 1
+          cd llvm
+          git checkout 659e8ec8d2702269c591db80449ca94c6e843b7a
+          cd ..
 
-      - name: Configure kernel
+      - name: Download kernel source
         run: |
-          make ARCH=arm64 op5-perf_defconfig
-          # 手机不需要ACPI，直接关掉避免编译错误
-          sed -i 's/CONFIG_ACPI=y/CONFIG_ACPI=n/' out/.config
-          make ARCH=arm64 O=out olddefconfig
+          wget -O kernel.zip https://github.com/LineageOS/android_kernel_oneplus_msm8998/archive/3fc28a06f3f6a208d5b54a0e13e5c2ed3273e043.zip
+          unzip -o kernel.zip
+          mv android_kernel_oneplus_msm8998-3fc28a06f3f6a208d5b54a0e13e5c2ed3273e043 kernel
+          rm kernel.zip
 
-      - name: Build kernel
+      - name: Apply DC调光补丁
         run: |
-          export CROSS_COMPILE=$CROSS_COMPILE
-          export CC=$CC
-          # 用Clang编译，兼容性更好，不会有GCC的那些老代码警告问题
-          make -j$(nproc) ARCH=arm64 O=out CROSS_COMPILE=$CROSS_COMPILE CC=$CC KCFLAGS="-Wno-error" Image.gz-dtb
+          cd kernel
+          cp -r ../drivers .
 
-      - name: Pack flashable zip with AnyKernel3
+      - name: Apply ZRAM回写补丁
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-          cp out/arch/arm64/boot/Image.gz-dtb anykernel/
-          cd anykernel
-          # 适配OP5/OP5T，不刷模块，保证WiFi正常
-          sed -i 's/device.name1=maguro/device.name1=cheeseburger/' anykernel.sh
-          sed -i 's/device.name2=toro/device.name2=dumpling/' anykernel.sh
-          sed -i 's/do.modules=1/do.modules=0/' anykernel.sh
-          sed -i 's|BLOCK=.*|BLOCK=/dev/block/bootdevice/by-name/boot|' anykernel.sh
-          zip -r9 OP5T-BluSpark-ZRAM-Writeback.zip * -x .git README.md
+          cd kernel
+          patch -p1 < ../zram-writeback-base.patch
+          patch -p1 < ../zram-writeback-fix.patch
 
-      - name: Upload flashable zip
+      - name: Build kernel with LLVM
+        run: |
+          cd kernel
+          make -j$(nproc --all) O=out \
+              ARCH=arm64 \
+              SUBARCH=arm64 \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+              PATH=../llvm/bin:$PATH \
+              CC=clang \
+              CXX=clang++ \
+              AR=llvm-ar \
+              NM=llvm-nm \
+              AS=llvm-as \
+              OBJCOPY=llvm-objcopy \
+              OBJDUMP=llvm-objdump \
+              STRIP=llvm-strip
+
+      - name: Download AnyKernel3
+        run: |
+          git clone https://github.com/Seshiria/AnyKernel3 --depth 1
+          cd AnyKernel3
+          git checkout 949ffeaee8cdb92fea6f9dbfc966ed1ef8041a3b
+          cd ..
+
+      - name: Package flashable zip
+        run: |
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          cd AnyKernel3
+          zip -r ../op5dc-zram-dc-kernel.zip .
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OP5T-Kernel-ZRAM
-          path: anykernel/OP5T-BluSpark-ZRAM-Writeback.zip
+          name: op5dc-kernel
+          path: op5dc-zram-dc-kernel.zip
