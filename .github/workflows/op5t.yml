@@ -1,51 +1,43 @@
 name: Build Kernel
-
-on:
-  push:
-    branches: [ kernel4.4.258 ]
-  pull_request:
-    branches: [ kernel4.4.258 ]
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
+on:  
+push:    
+branches: [ main ]  
+pull_request:    
+branches: [ main ]  
+workflow_dispatch:
+jobs:  
+build:    
+runs-on: ubuntu-latest    
+steps:
+      - name: Checkout your repository        
+uses: actions/checkout@v4
+      - name: Install dependencies        
+run: |
           sudo apt update
           sudo apt install -y git wget unzip build-essential libssl-dev libelf-dev bison flex
-
-      - name: Download LLVM toolchain
-        run: |
-          git clone https://github.com/kdrag0n/proton-clang llvm --depth 1
+      - name: Download LLVM toolchain        
+run: |
+          git clone https://github.com/kdrag0n/proton-clang llvm
           cd llvm
           git checkout 659e8ec8d2702269c591db80449ca94c6e843b7a
           cd ..
-
-      - name: Download kernel source
-        run: |
+      - name: Download kernel source        
+run: |
           wget -O kernel.zip https://github.com/LineageOS/android_kernel_oneplus_msm8998/archive/3fc28a06f3f6a208d5b54a0e13e5c2ed3273e043.zip
           unzip -o kernel.zip
           mv android_kernel_oneplus_msm8998-3fc28a06f3f6a208d5b54a0e13e5c2ed3273e043 kernel
           rm kernel.zip
-
-      - name: Apply DC调光补丁
-        run: |
+      - name: Apply DC调光补丁        
+run: |
           cd kernel
           cp -r ../drivers .
-
-      - name: Apply ZRAM回写补丁
-        run: |
+      - name: Apply ZRAM回写补丁        
+run: |
           cd kernel
           patch -p1 < ../zram-writeback-base.patch
           patch -p1 < ../zram-writeback-fix.patch
-
-      - name: Build kernel with LLVM
-        run: |
+      - name: Build kernel with LLVM        
+run: |
           cd kernel
           make -j$(nproc --all) O=out \
               ARCH=arm64 \
@@ -61,22 +53,19 @@ jobs:
               OBJCOPY=llvm-objcopy \
               OBJDUMP=llvm-objdump \
               STRIP=llvm-strip
-
-      - name: Download AnyKernel3
-        run: |
-          git clone https://github.com/Seshiria/AnyKernel3 --depth 1
+      - name: Download AnyKernel3        
+run: |
+          git clone https://github.com/Seshiria/AnyKernel3
           cd AnyKernel3
           git checkout 949ffeaee8cdb92fea6f9dbfc966ed1ef8041a3b
           cd ..
-
-      - name: Package flashable zip
-        run: |
+      - name: Package flashable zip        
+run: |
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           cd AnyKernel3
           zip -r ../op5dc-zram-dc-kernel.zip .
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: op5dc-kernel
-          path: op5dc-zram-dc-kernel.zip
+      - name: Upload artifact        
+uses: actions/upload-artifact@v4        
+with:          
+name: op5dc-kernel          
+path: op5dc-zram-dc-kernel.zip
