@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     steps:
       - name: Checkout your repository
         uses: actions/checkout@v4
@@ -17,34 +17,30 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y git wget unzip build-essential libssl-dev libelf-dev bison flex
+          sudo apt install -y git wget unzip build-essential libssl-dev libelf-dev bison flex gcc-aarch64-linux-gnu
 
-      - name: Download LLVM toolchain
+      - name: Download working LLVM toolchain
         run: |
-          git clone https://github.com/kdrag0n/proton-clang llvm
-          cd llvm
-          git checkout 659e8ec8d2702269c591db80449ca94c6e843b7a
-          cd ..
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487759.tar.gz
+          tar -xf clang-r487759.tar.gz -C llvm
+          rm -f clang-r487759.tar.gz
 
-      # 重要：你的源码已经在这里，不需要移动，直接使用
-      - name: Apply ZRAM回写补丁
+      - name: Apply ZRAM Writeback Patches
         run: |
-          patch -p1 < ../zram-writeback-base.patch || true
-          patch -p1 < ../zram-writeback-fix.patch || true
+          patch -p1 < zram-writeback-base.patch || true
+          patch -p1 < zram-writeback-fix.patch || true
 
       - name: Build kernel with LLVM
         run: |
-          make -j$(nproc --all) O=out \
+          make -j$(nproc) O=out \
               ARCH=arm64 \
               SUBARCH=arm64 \
               CROSS_COMPILE=aarch64-linux-gnu- \
-              CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-              PATH=../llvm/bin:$PATH \
+              PATH=$(pwd)/llvm/bin:$PATH \
               CC=clang \
               CXX=clang++ \
               AR=llvm-ar \
               NM=llvm-nm \
-              AS=llvm-as \
               OBJCOPY=llvm-objcopy \
               OBJDUMP=llvm-objdump \
               STRIP=llvm-strip
