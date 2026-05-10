@@ -1,89 +1,64 @@
-name: Build OP5t Kernel with zRAM Writeback
+name: Build OP5T Kernel
 
 on:
   workflow_dispatch:
-    inputs:
-      branch:
-        description: '请输入你要编译的代码分支 (例如: master, lineage-19.1)'
-        required: true
-        default: 'master'
-      defconfig:
-        description: '请输入 Defconfig 名 (例如: msmcortex_defconfig, lineage_oneplus5_defconfig)'
-        required: true
-        default: 'msm8998_defconfig'
 
 jobs:
-  build-kernel:
-    runs-on: ubuntu-22.04
+  build:
+    runs-on: ubuntu-20.04
 
     steps:
-      - name: 检出构建环境
-        uses: actions/checkout@v4
+    - name: 检出源码
+      uses: actions/checkout@v4
 
-      - name: 安装编译依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3
+    - name: 准备环境
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc build-essential zip gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev libelf-dev flex bison
 
-      - name: 下载内核源码
-        run: |
-          git clone --depth=1 -b ${{ github.event.inputs.branch }} https://github.com/yangliang235/op5.git kernel-source
+    - name: 下载 Clang
+      run: |
+        mkdir -p $GITHUB_WORKSPACE/clang
+        cd $GITHUB_WORKSPACE/clang
+        # 使用适配 4.4 内核的经典 Android Clang 版本
+        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r353375c.tar.gz
+        tar -xf clang-r353375c.tar.gz
 
-      - name: 下载交叉编译工具链 (Proton-Clang)
-        run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain
+    - name: 编译内核
+      run: |
+        export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+        export ARCH=arm64
+        export SUBARCH=arm64
+        
+        # 使用你指定的 OP5-perf_defconfig
+        make O=out OP5-perf_defconfig
+        
+        make -j$(nproc --all) O=out \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-      - name: 修改 Defconfig 以开启 zRAM 回写功能
-        run: |
-          cd kernel-source
-          DEFCONFIG_FILE="arch/arm64/configs/${{ github.event.inputs.defconfig }}"
-          
-          echo "正在向 $DEFCONFIG_FILE 注入 zRAM Writeback 配置..."
-          
-          # 确保主要 zRAM 以及回写依赖都被开启
-          cat << 'EOF' >> $DEFCONFIG_FILE
-          CONFIG_ZSMALLOC=y
-          CONFIG_ZRAM=y
-          CONFIG_ZRAM_WRITEBACK=y
-          EOF
-          
-          echo "==== 注入后的配置尾部信息 ===="
-          tail -n 5 $DEFCONFIG_FILE
+    - name: 打包刷机包
+      run: |
+        git clone https://github.com/osm0sis/AnyKernel3.git
+        cd AnyKernel3
+        # 针对 5T (dumpling) 的配置
+        sed -i 's/device.name1=.*/device.name1=dumpling/' anykernel.sh
+        sed -i 's/device.name2=.*/device.name2=cheeseburger/' anykernel.sh
+        sed -i 's|block=.*/|block=/dev/block/bootdevice/by-name/boot|' anykernel.sh
+        
+        # 1. 检查生成的镜像文件名。如果是 Image.gz-dtb 请改名
+        if [ -f ../out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp ../out/arch/arm64/boot/Image.gz-dtb .
+        else
+            cp ../out/arch/arm64/boot/Image.gz .
+        fi
+        
+        zip -r9 ../OP5T-ZRAM-Update.zip *
 
-      - name: 开始编译内核
-        run: |
-          cd kernel-source
-          
-          # 设置工具链环境变量
-          export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          export CC=clang
-          
-          # 生成 .config 文件
-          make O=out ARCH=arm64 ${{ github.event.inputs.defconfig }}
-          
-          # 编译内核 (Image.gz-dtb)
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32
-          
-      - name: 打包刷机包 (AnyKernel3)
-        run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-          cd AnyKernel3
-          # 清理无用文件
-          rm -rf .git README.md
-          
-          # 复制编译好的内核文件 (OnePlus 5 通常是 Image.gz-dtb)
-          # 如果你的源码生成的是 Image-dtb 或 Image，请修改下面这行
-          cp ../kernel-source/out/arch/arm64/boot/Image.gz-dtb ./ || cp ../kernel-source/out/arch/arm64/boot/Image ./
-          
-          # 打包成 ZIP
-          zip -r9 ../OP5-Kernel-zRAM-Writeback.zip *
-
-      - name: 上传编译结果
-        uses: actions/upload-artifact@v4
-        with:
-          name: OP5-Kernel-zRAM-Writeback
-          path: OP5-Kernel-zRAM-Writeback.zip
+    - name: 发布结果
+      uses: actions/upload-artifact@v4
+      with:
+        name: OnePlus5T-Kernel
+        path: OP5T-ZRAM-Update.zip
