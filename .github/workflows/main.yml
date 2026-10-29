@@ -40,20 +40,27 @@ jobs:
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
 
-      - name: Install Dependencies & Download Proton Clang
+      - name: Install Dependencies & Setup Toolchains
         run: |
           sudo apt-get update -y
           sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev libncursesw5-dev zip ccache libelf-dev wget git binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
+          # 1. 下载 Proton Clang
           mkdir -p clang
           cd clang
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git .
           cd ..
 
+          # 2. 下载 GCC 4.9 交叉编译工具链
           mkdir -p toolchain
           cd toolchain
           git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64 --depth=1
           git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc32 --depth=1
+          cd ..
+
+          # 3. 欺骗源码中硬编码的绝对路径检查，建立软链接
+          sudo mkdir -p /home/runner/android/toolchains/aarch64-linux-android-4.9/bin
+          sudo ln -s $(pwd)/toolchain/gcc64/bin/aarch64-linux-android-gcc /home/runner/android/toolchains/aarch64-linux-android-4.9/bin/aarch64-linux-android-gcc || true
 
       - name: Inject Re:Kernel Source and Patch Kernel
         run: |
@@ -175,9 +182,9 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           
-          # 核心修复：把源码中 Clang 不兼容的复合 -mcpu 参数替换为兼容的单核心参数
-          find arch/arm64/ -name "*.mk" -o -name "Makefile" | xargs sed -i 's/-mcpu=cortex-a73\.cortex-a53/-mcpu=cortex-a73/g' || true
-          sed -i 's/-mcpu=cortex-a73\.cortex-a53/-mcpu=cortex-a73/g' Makefile || true
+          # 核心修复：彻底消灭源码中不兼容的复合 CPU 参数 (-mcpu 和 -mtune)
+          find . -name "*.mk" -o -name "Makefile" -o -name "Kconfig*" | xargs sed -i 's/-mcpu=cortex-a73\.cortex-a53/-mcpu=cortex-a73/g' || true
+          find . -name "*.mk" -o -name "Makefile" -o -name "Kconfig*" | xargs sed -i 's/-mtune=cortex-a73\.cortex-a53/-mtune=cortex-a73/g' || true
 
           export KERNEL_CMDLINE="O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$(pwd)/toolchain/gcc64/bin/aarch64-linux-android- CROSS_COMPILE_ARM32=$(pwd)/toolchain/gcc32/bin/arm-linux-androideabi-"
 
