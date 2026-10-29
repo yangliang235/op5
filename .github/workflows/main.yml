@@ -35,10 +35,13 @@ jobs:
           export CROSS_COMPILE=$(pwd)/toolchain/gcc64/bin/aarch64-linux-android-
           export CROSS_COMPILE_ARM32=$(pwd)/toolchain/gcc32/bin/arm-linux-androideabi-
           
-          # 1. 载入一加 5/5T 默认配置
+          # 1. 彻底清理源码树，防止 "is not clean" 报错
+          make mrproper
+          
+          # 2. 载入一加 5/5T 默认配置 (小写 op5-perf_defconfig)
           make op5-perf_defconfig
           
-          # 2. 强行开启 APatch/KPM、ZRAM回写及内核模块/kprobes依赖项
+          # 3. 开启 APatch/KPM、ZRAM 回写及内核模块依赖项
           scripts/config --enable CONFIG_KALLSYMS
           scripts/config --enable CONFIG_KALLSYMS_ALL
           scripts/config --enable CONFIG_MODULES
@@ -50,10 +53,10 @@ jobs:
           scripts/config --enable CONFIG_ZRAM_MEMORY_TRACKING
           scripts/config --enable CONFIG_SWAP
           
-          # 3. 检查并更新配置
+          # 4. 更新并确认配置
           make olddefconfig
           
-          # 4. 多核并行编译内核
+          # 5. 开始多核构建
           make -j$(nproc)
 
       - name: Download APatch Tools and Re-Kernel KPM
@@ -61,21 +64,21 @@ jobs:
           mkdir -p apatch_env
           cd apatch_env
           
-          # 下载官方最新 KernelPatch 的 kptools 和 kpimg
+          # 下载 KernelPatch 的 kptools 和 kpimg
           wget -O kptools https://github.com/bmax121/KernelPatch/releases/latest/download/kptools-linux
           wget -O kpimg https://github.com/bmax121/KernelPatch/releases/latest/download/kpimg-android
           chmod +x kptools
           
-          # 下载 re_kernel.kpm 模块源码/成品
-          wget -O re_kernel.kpm https://github.com/AndroidPatch/kpm/raw/main/re_kernel.kpm || echo "Please check kpm download url"
+          # 下载 re_kernel.kpm
+          wget -O re_kernel.kpm https://github.com/AndroidPatch/kpm/raw/main/re_kernel.kpm || echo "Check re_kernel URL"
 
       - name: Patch Kernel with APatch & Embed Re-Kernel
         run: |
           cd apatch_env
-          # 复制编译好的内核文件
+          # 复制编译好的内核镜像
           cp ../arch/arm64/boot/Image.gz-dtb ./kernel-b
           
-          # 使用 kptools 写入 SuperKey、修补内核并静态嵌入 re_kernel.kpm 模块
+          # 写入 SuperKey 并嵌入 re_kernel.kpm
           ./kptools -p --image kernel-b --skey "${{ github.event.inputs.super_key }}" --kpimg kpimg --embed re_kernel.kpm --out Image.gz-dtb-patched
 
       - name: Package with AnyKernel3 for OnePlus 5/5T
@@ -83,17 +86,17 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           cd AnyKernel3
           
-          # 适配 5 / 5T (cheeseburger / dumpling)
+          # 配置 AnyKernel3 适配 cheeseburger / dumpling
           sed -i 's/device.name1=/device.name1=cheeseburger/g' anykernel.sh
           sed -i 's/device.name2=/device.name2=dumpling/g' anykernel.sh
           sed -i 's/device.name3=/device.name3=OnePlus5/g' anykernel.sh
           sed -i 's/device.name4=/device.name4=OnePlus5T/g' anykernel.sh
           sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.1/by-name/boot;|block=/dev/block/bootdevice/by-name/boot;|g' anykernel.sh
           
-          # 替换为修补后、且已集成 Re-Kernel 的内核镜像
+          # 替换为修补后嵌入了 Re-Kernel 的内核镜像
           cp ../apatch_env/Image.gz-dtb-patched ./Image.gz-dtb
           
-          # 打包刷机 zip
+          # 打包 ZIP
           ZIP_NAME="blu_spark_APatch_ReKernel_OP5_5T_$(date +%Y%m%d_%H%M%S).zip"
           zip -r9 "$ZIP_NAME" * -x .git README.md *placeholder
           
