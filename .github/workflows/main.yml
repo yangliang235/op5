@@ -22,7 +22,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Install host dependencies
+      - name: Install host dependencies and Binutils
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential ccache curl flex \
@@ -30,16 +30,18 @@ jobs:
             lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev \
             liblz4-tool libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
             lzop pngcrush rsync schedtool squashfs-tools xsltproc zip \
-            zlib1g-dev python3 cpio device-tree-compiler
+            zlib1g-dev python3 cpio device-tree-compiler \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
-      - name: Clone AOSP GCC 4.9 Toolchains
+      - name: Clone AOSP Clang 10 Toolchain
         run: |
-          # 下载 Google 官方 AOSP GCC 4.9 交叉编译工具链 (专用于 Android 老内核，完美兼容 4.4)
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-10.0.0_r47 gcc64
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-10.0.0_r47 gcc32
+          # 下载 AOSP Clang 10 预编译包 (Android 10 标准工具链)
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-10.0.0_r47/clang-r365631c.tar.gz
+          mkdir -p clang
+          tar -xzf clang-r365631c.tar.gz -C clang
           
-          echo "$PWD/gcc64/bin" >> $GITHUB_PATH
-          echo "$PWD/gcc32/bin" >> $GITHUB_PATH
+          # 将其加入 PATH
+          echo "$PWD/clang/bin" >> $GITHUB_PATH
 
       - name: Patch source (swappiness = 200)
         run: |
@@ -271,11 +273,12 @@ jobs:
           print("Re:Kernel 注入成功。")
           PY
 
-      - name: Configure kernel for APatch (GCC 4.9)
+      - name: Configure kernel for APatch (Clang 10)
         run: |
-          make O=out ARCH=$ARCH \
-               CROSS_COMPILE=aarch64-linux-android- \
-               CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+          make O=out ARCH=$ARCH CC=clang \
+               CLANG_TRIPLE=aarch64-linux-gnu- \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                $DEFCONFIG
 
           ./scripts/config --file out/.config \
@@ -296,11 +299,12 @@ jobs:
             fi
           done
 
-      - name: Build kernel (GCC 4.9)
+      - name: Build kernel (Clang 10)
         run: |
-          make -j"$(nproc)" O=out ARCH=$ARCH \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+          make -j"$(nproc)" O=out ARCH=$ARCH CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             Image Image.gz dtbs
 
       - name: Pack AnyKernel3
