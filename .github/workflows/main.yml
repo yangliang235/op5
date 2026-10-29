@@ -52,7 +52,7 @@ jobs:
           sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev libncursesw5-dev zip ccache libelf-dev wget git
 
           # 下载适用于 MSM8998 平台的 GCC 4.9 交叉编译器
-          mkdir toolchain
+          mkdir -p toolchain
           cd toolchain
           git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64 --depth=1
           git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc32 --depth=1
@@ -64,13 +64,15 @@ jobs:
           export CROSS_COMPILE=$(pwd)/toolchain/gcc64/bin/aarch64-linux-android-
           export CROSS_COMPILE_ARM32=$(pwd)/toolchain/gcc32/bin/arm-linux-androideabi-
 
-          # 彻底清理源码树，防止 "is not clean" 报错
+          # 1. 彻底删除残余的 out 目录与缓存配置文件，防止触发 "is not clean" 中断
+          rm -rf out/ .config*
           make mrproper
+          make distclean
 
-          # 1. 载入一加 5/5T 默认配置 (op5-perf_defconfig)
+          # 2. 载入一加 5/5T 默认配置 (op5-perf_defconfig)
           make $KERNEL_DEFCONFIG
 
-          # 2. 动态注入开启 APatch/KPM、ZRAM 回写及模块/kprobes 依赖
+          # 3. 动态注入开启 APatch/KPM、ZRAM 回写及模块/kprobes 依赖
           scripts/config --enable CONFIG_KALLSYMS
           scripts/config --enable CONFIG_KALLSYMS_ALL
           scripts/config --enable CONFIG_MODULES
@@ -82,7 +84,7 @@ jobs:
           scripts/config --enable CONFIG_ZRAM_MEMORY_TRACKING
           scripts/config --enable CONFIG_SWAP
 
-          # 3. 检查更新配置并开启多核编译
+          # 4. 检查更新配置并开启多核编译
           make olddefconfig
           make -j$(nproc --all)
 
@@ -102,7 +104,7 @@ jobs:
       - name: Patch Kernel with APatch & Embed Re-Kernel
         run: |
           cd apatch_env
-          # 复制编译好的 Image.gz-dtb
+          # 复制编译好的 Image.gz-dtb 镜像
           cp ../arch/arm64/boot/Image.gz-dtb ./kernel-b
 
           # 设定 SuperKey 默认值 (手动触发取输入的 key，定时/Push 触发时使用默认 key)
