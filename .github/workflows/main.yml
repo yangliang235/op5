@@ -52,7 +52,7 @@ jobs:
 
       - name: Inject Re:Kernel Source and Patch Kernel
         run: |
-          # 1. 创建 rekernel 专用头文件 (自动适配 Linux 4.4 兼容性，解决 JOBCTL_TRAP_FREEZE 问题)
+          # 1. 创建 rekernel 专用文件夹与头文件
           mkdir -p drivers/rekernel
           cat << 'EOF' > drivers/rekernel/rekernel.h
           #ifndef _REKERNEL_H
@@ -156,15 +156,16 @@ jobs:
           #endif
           EOF
 
-          # 2. 修改 Makefile 将 rekernel 引入编译
-          echo 'obj-y += rekernel/' > drivers/rekernel/Makefile
+          # 2. 修复 Makefile 写入，确保仅生成当前目录的编译目标
+          echo "obj-y := rekernel.o" > drivers/rekernel/Makefile
+          touch drivers/rekernel/rekernel.c
 
-          # 3. 在根目录 drivers/Makefile 中加入 rekernel 目录（如果还没有的话）
+          # 3. 在根目录 drivers/Makefile 中安全引入 rekernel
           if ! grep -q "rekernel" drivers/Makefile; then
               echo "obj-\$(CONFIG_ANDROID) += rekernel/" >> drivers/Makefile
           fi
 
-          echo "Re:Kernel header and structure injected successfully."
+          echo "Re:Kernel injected successfully."
 
       - name: Configure & Compile Kernel
         run: |
@@ -173,7 +174,7 @@ jobs:
           export CROSS_COMPILE=$(pwd)/toolchain/gcc64/bin/aarch64-linux-android-
           export CROSS_COMPILE_ARM32=$(pwd)/toolchain/gcc32/bin/arm-linux-androideabi-
 
-          # 清理旧编译痕迹
+          # 清理旧编译痕迹与残余 out 目录
           rm -rf out/ .config*
           make mrproper
           make distclean
@@ -181,7 +182,7 @@ jobs:
           # 载入配置
           make $KERNEL_DEFCONFIG
 
-          # 开启必要宏
+          # 开启必要宏 (Kallsyms, ZRAM 回写, 模块等)
           scripts/config --enable CONFIG_KALLSYMS
           scripts/config --enable CONFIG_KALLSYMS_ALL
           scripts/config --enable CONFIG_MODULES
@@ -194,6 +195,8 @@ jobs:
           scripts/config --enable CONFIG_SWAP
 
           make olddefconfig
+          
+          # 直接在源码树内多核编译，彻底杜绝外置目录缓存冲突
           make -j$(nproc --all)
 
       - name: Prepare AnyKernel3 & Package Flashable ZIP
