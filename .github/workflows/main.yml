@@ -32,12 +32,11 @@ jobs:
             lzop pngcrush rsync schedtool squashfs-tools xsltproc zip \
             zlib1g-dev python3 cpio device-tree-compiler
 
-      - name: Clone toolchains
+      - name: Clone toolchains (GCC)
         run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+          # 使用兼容 4.4 内核的 GCC 交叉编译工具链
           git clone --depth=1 https://github.com/arter97/arm64-gcc.git gcc64
           git clone --depth=1 https://github.com/arter97/arm32-gcc.git gcc32
-          echo "$PWD/clang/bin"          >> $GITHUB_PATH
           echo "$PWD/gcc64/bin"          >> $GITHUB_PATH
           echo "$PWD/gcc32/bin"          >> $GITHUB_PATH
 
@@ -271,10 +270,9 @@ jobs:
           print("Re:Kernel 注入成功。")
           PY
 
-      - name: Configure kernel for APatch
+      - name: Configure kernel for APatch (GCC)
         run: |
-          make O=out ARCH=$ARCH CC=clang \
-               CLANG_TRIPLE=aarch64-linux-gnu- \
+          make O=out ARCH=$ARCH \
                CROSS_COMPILE=aarch64-linux-gnu- \
                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                $DEFCONFIG
@@ -297,10 +295,9 @@ jobs:
             fi
           done
 
-      - name: Build kernel
+      - name: Build kernel (GCC)
         run: |
           make -j"$(nproc)" O=out ARCH=$ARCH \
-            CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             Image Image.gz dtbs
