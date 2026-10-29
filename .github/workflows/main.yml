@@ -1,0 +1,107 @@
+name: Build blu_spark Kernel with APatch, KPM & Re-Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      super_key:
+        description: '输入你的 APatch SuperKey (8-63位字母数字)'
+        required: true
+        default: 'my_super_key_123'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev libncursesw5-dev zip libssl-dev ccache libelf-dev wget git
+
+      - name: Download GCC Toolchains (GCC 4.9)
+        run: |
+          mkdir toolchain
+          cd toolchain
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc32
+
+      - name: Configure and Compile Kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=$(pwd)/toolchain/gcc64/bin/aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=$(pwd)/toolchain/gcc32/bin/arm-linux-androideabi-
+          
+          # 1. 载入一加 5/5T 默认配置
+          make op5-perf_defconfig
+          
+          # 2. 强行开启 APatch/KPM、ZRAM回写及内核模块/kprobes依赖项
+          scripts/config --enable CONFIG_KALLSYMS
+          scripts/config --enable CONFIG_KALLSYMS_ALL
+          scripts/config --enable CONFIG_MODULES
+          scripts/config --enable CONFIG_MODULE_UNLOAD
+          scripts/config --enable CONFIG_KPROBES
+          scripts/config --enable CONFIG_HAVE_KPROBES
+          scripts/config --enable CONFIG_ZRAM
+          scripts/config --enable CONFIG_ZRAM_WRITEBACK
+          scripts/config --enable CONFIG_ZRAM_MEMORY_TRACKING
+          scripts/config --enable CONFIG_SWAP
+          
+          # 3. 检查并更新配置
+          make olddefconfig
+          
+          # 4. 多核并行编译内核
+          make -j$(nproc)
+
+      - name: Download APatch Tools and Re-Kernel KPM
+        run: |
+          mkdir -p apatch_env
+          cd apatch_env
+          
+          # 下载官方最新 KernelPatch 的 kptools 和 kpimg
+          wget -O kptools https://github.com/bmax121/KernelPatch/releases/latest/download/kptools-linux
+          wget -O kpimg https://github.com/bmax121/KernelPatch/releases/latest/download/kpimg-android
+          chmod +x kptools
+          
+          # 下载 re_kernel.kpm 模块源码/成品
+          wget -O re_kernel.kpm https://github.com/AndroidPatch/kpm/raw/main/re_kernel.kpm || echo "Please check kpm download url"
+
+      - name: Patch Kernel with APatch & Embed Re-Kernel
+        run: |
+          cd apatch_env
+          # 复制编译好的内核文件
+          cp ../arch/arm64/boot/Image.gz-dtb ./kernel-b
+          
+          # 使用 kptools 写入 SuperKey、修补内核并静态嵌入 re_kernel.kpm 模块
+          ./kptools -p --image kernel-b --skey "${{ github.event.inputs.super_key }}" --kpimg kpimg --embed re_kernel.kpm --out Image.gz-dtb-patched
+
+      - name: Package with AnyKernel3 for OnePlus 5/5T
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          cd AnyKernel3
+          
+          # 适配 5 / 5T (cheeseburger / dumpling)
+          sed -i 's/device.name1=/device.name1=cheeseburger/g' anykernel.sh
+          sed -i 's/device.name2=/device.name2=dumpling/g' anykernel.sh
+          sed -i 's/device.name3=/device.name3=OnePlus5/g' anykernel.sh
+          sed -i 's/device.name4=/device.name4=OnePlus5T/g' anykernel.sh
+          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.1/by-name/boot;|block=/dev/block/bootdevice/by-name/boot;|g' anykernel.sh
+          
+          # 替换为修补后、且已集成 Re-Kernel 的内核镜像
+          cp ../apatch_env/Image.gz-dtb-patched ./Image.gz-dtb
+          
+          # 打包刷机 zip
+          ZIP_NAME="blu_spark_APatch_ReKernel_OP5_5T_$(date +%Y%m%d_%H%M%S).zip"
+          zip -r9 "$ZIP_NAME" * -x .git README.md *placeholder
+          
+          echo "ZIP_PATH=AnyKernel3/$ZIP_NAME" >> $GITHUB_ENV
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+
+      - name: Upload Final Flashable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_PATH }}
