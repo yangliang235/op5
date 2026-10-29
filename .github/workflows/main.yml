@@ -58,7 +58,7 @@ jobs:
           git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc32 --depth=1
           cd ..
 
-          # 3. 欺骗源码中硬编码的绝对路径检查，建立软链接
+          # 3. 建立软链接，绕过源码中硬编码的 gcc-version.sh 路径检查
           sudo mkdir -p /home/runner/android/toolchains/aarch64-linux-android-4.9/bin
           sudo ln -s $(pwd)/toolchain/gcc64/bin/aarch64-linux-android-gcc /home/runner/android/toolchains/aarch64-linux-android-4.9/bin/aarch64-linux-android-gcc || true
 
@@ -182,7 +182,7 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           
-          # 核心修复：彻底消灭源码中不兼容的复合 CPU 参数 (-mcpu 和 -mtune)
+          # 清除源码中不兼容的复合 CPU 架构参数
           find . -name "*.mk" -o -name "Makefile" -o -name "Kconfig*" | xargs sed -i 's/-mcpu=cortex-a73\.cortex-a53/-mcpu=cortex-a73/g' || true
           find . -name "*.mk" -o -name "Makefile" -o -name "Kconfig*" | xargs sed -i 's/-mtune=cortex-a73\.cortex-a53/-mtune=cortex-a73/g' || true
 
@@ -195,6 +195,7 @@ jobs:
           mkdir -p out
           make $KERNEL_CMDLINE $KERNEL_DEFCONFIG
 
+          # 开启必要宏，并彻底关闭会引起 Clang 汇编报错的 CONFIG_VDSO
           sed -i 's/# CONFIG_KALLSYMS is not set/CONFIG_KALLSYMS=y/g' out/.config
           sed -i 's/# CONFIG_KALLSYMS_ALL is not set/CONFIG_KALLSYMS_ALL=y/g' out/.config
           sed -i 's/# CONFIG_MODULES is not set/CONFIG_MODULES=y/g' out/.config
@@ -205,6 +206,8 @@ jobs:
           sed -i 's/# CONFIG_ZRAM_WRITEBACK is not set/CONFIG_ZRAM_WRITEBACK=y/g' out/.config
           sed -i 's/# CONFIG_ZRAM_MEMORY_TRACKING is not set/CONFIG_ZRAM_MEMORY_TRACKING=y/g' out/.config
           sed -i 's/# CONFIG_SWAP is not set/CONFIG_SWAP=y/g' out/.config
+          sed -i 's/CONFIG_VDSO=y/CONFIG_VDSO=n/g' out/.config || echo "CONFIG_VDSO is already disabled"
+          echo "CONFIG_VDSO=n" >> out/.config
 
           make $KERNEL_CMDLINE olddefconfig
           make $KERNEL_CMDLINE -j$(nproc --all)
