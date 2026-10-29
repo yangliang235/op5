@@ -40,19 +40,18 @@ jobs:
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
 
-      - name: Install Dependencies & Download Clang Toolchain
+      - name: Install Dependencies & Download Modern Clang (Proton Clang)
         run: |
           sudo apt-get update -y
           sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev libncursesw5-dev zip ccache libelf-dev wget git binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
-          # 下载支持 cortex-a73 等现代特性的 AOSP Clang / LLVM 编译链
+          # 下载支持现代 CPU 架构参数的 Proton Clang
           mkdir -p clang
           cd clang
-          wget -O clang.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android10-release/clang-r353983c.tar.gz
-          tar -xzf clang.tar.gz
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git .
           cd ..
 
-          # 同时拉取配套的 32 位和 64 位 binutils / 库支持
+          # 下载 LineageOS GCC 4.9 交叉编译工具链
           mkdir -p toolchain
           cd toolchain
           git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64 --depth=1
@@ -60,7 +59,6 @@ jobs:
 
       - name: Inject Re:Kernel Source and Patch Kernel
         run: |
-          # 1. 创建 rekernel 专用文件夹与头文件
           mkdir -p drivers/rekernel
           cat << 'EOF' > drivers/rekernel/rekernel.h
           #ifndef _REKERNEL_H
@@ -179,8 +177,8 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           
-          # 设定 Clang 编译参数 (使用 AOSP Clang + GCC 库支持)
-          export KERNEL_CMDLINE="O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$(pwd)/toolchain/gcc64/bin/aarch64-linux-android- CROSS_COMPILE_ARM32=$(pwd)/toolchain/gcc32/bin/arm-linux-androideabi- LD=ld.lld"
+          # 设定使用 Proton Clang 编译器的完整参数（精确指定 binutils 路径避免报错）
+          export KERNEL_CMDLINE="O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$(pwd)/toolchain/gcc64/bin/aarch64-linux-android- CROSS_COMPILE_ARM32=$(pwd)/toolchain/gcc32/bin/arm-linux-androideabi-"
 
           # 1. 彻底清空残余
           rm -rf out/
