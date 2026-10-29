@@ -1,4 +1,4 @@
-name: Build blu_spark Kernel with APatch, KPM & Re-Kernel
+name: Build OnePlus-MSM8998-Kernel-OOS10
 
 on:
   workflow_dispatch:
@@ -7,41 +7,70 @@ on:
         description: '输入你的 APatch SuperKey (8-63位字母数字)'
         required: true
         default: 'my_super_key_123'
+  schedule:
+    # 每周日零点自动运行 (Cron)
+    - cron: '0 0 * * 0'
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_MAXSIZE: "2G"
+      CCACHE_HARDLINK: "true"
+      KERNEL_DEFCONFIG: "op5-perf_defconfig"
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Source
         uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+          fetch-depth: 1
 
-      - name: Install Build Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev libncursesw5-dev zip libssl-dev ccache libelf-dev wget git
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
 
-      - name: Download GCC Toolchains (GCC 4.9)
+      - name: Remove unnecessary files to free space
         run: |
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+      - name: Install Dependencies & Download GCC Toolchains
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev libncursesw5-dev zip ccache libelf-dev wget git
+
+          # 下载适用于 MSM8998 平台的 GCC 4.9 交叉编译器
           mkdir toolchain
           cd toolchain
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc32
+          git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64 --depth=1
+          git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc32 --depth=1
 
-      - name: Configure and Compile Kernel
+      - name: Configure & Compile Kernel
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=$(pwd)/toolchain/gcc64/bin/aarch64-linux-android-
           export CROSS_COMPILE_ARM32=$(pwd)/toolchain/gcc32/bin/arm-linux-androideabi-
-          
-          # 1. 彻底清理源码树，防止 "is not clean" 报错
+
+          # 彻底清理源码树，防止 "is not clean" 报错
           make mrproper
-          
-          # 2. 载入一加 5/5T 默认配置 (小写 op5-perf_defconfig)
-          make op5-perf_defconfig
-          
-          # 3. 开启 APatch/KPM、ZRAM 回写及内核模块依赖项
+
+          # 1. 载入一加 5/5T 默认配置 (op5-perf_defconfig)
+          make $KERNEL_DEFCONFIG
+
+          # 2. 动态注入开启 APatch/KPM、ZRAM 回写及模块/kprobes 依赖
           scripts/config --enable CONFIG_KALLSYMS
           scripts/config --enable CONFIG_KALLSYMS_ALL
           scripts/config --enable CONFIG_MODULES
@@ -52,58 +81,63 @@ jobs:
           scripts/config --enable CONFIG_ZRAM_WRITEBACK
           scripts/config --enable CONFIG_ZRAM_MEMORY_TRACKING
           scripts/config --enable CONFIG_SWAP
-          
-          # 4. 更新并确认配置
-          make olddefconfig
-          
-          # 5. 开始多核构建
-          make -j$(nproc)
 
-      - name: Download APatch Tools and Re-Kernel KPM
+          # 3. 检查更新配置并开启多核编译
+          make olddefconfig
+          make -j$(nproc --all)
+
+      - name: Download APatch Tools & Re-Kernel KPM
         run: |
           mkdir -p apatch_env
           cd apatch_env
-          
-          # 下载 KernelPatch 的 kptools 和 kpimg
+
+          # 下载最新 KernelPatch 工具 (kptools 和 kpimg)
           wget -O kptools https://github.com/bmax121/KernelPatch/releases/latest/download/kptools-linux
           wget -O kpimg https://github.com/bmax121/KernelPatch/releases/latest/download/kpimg-android
           chmod +x kptools
-          
-          # 下载 re_kernel.kpm
-          wget -O re_kernel.kpm https://github.com/AndroidPatch/kpm/raw/main/re_kernel.kpm || echo "Check re_kernel URL"
+
+          # 下载 re_kernel.kpm 模块
+          wget -O re_kernel.kpm https://github.com/AndroidPatch/kpm/raw/main/re_kernel.kpm || echo "Failed to fetch re_kernel"
 
       - name: Patch Kernel with APatch & Embed Re-Kernel
         run: |
           cd apatch_env
-          # 复制编译好的内核镜像
+          # 复制编译好的 Image.gz-dtb
           cp ../arch/arm64/boot/Image.gz-dtb ./kernel-b
-          
-          # 写入 SuperKey 并嵌入 re_kernel.kpm
-          ./kptools -p --image kernel-b --skey "${{ github.event.inputs.super_key }}" --kpimg kpimg --embed re_kernel.kpm --out Image.gz-dtb-patched
 
-      - name: Package with AnyKernel3 for OnePlus 5/5T
+          # 设定 SuperKey 默认值 (手动触发取输入的 key，定时/Push 触发时使用默认 key)
+          SUPER_KEY="${{ github.event.inputs.super_key }}"
+          if [ -z "$SUPER_KEY" ]; then
+            SUPER_KEY="my_super_key_123"
+          fi
+
+          # 使用 kptools 注入 SuperKey 并嵌入 Re-Kernel
+          ./kptools -p --image kernel-b --skey "$SUPER_KEY" --kpimg kpimg --embed re_kernel.kpm --out Image.gz-dtb-patched
+
+      - name: Prepare AnyKernel3 & Package Flashable ZIP
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           cd AnyKernel3
-          
-          # 配置 AnyKernel3 适配 cheeseburger / dumpling
+
+          # 配置 AnyKernel3 适配 一加 5/5T (cheeseburger / dumpling)
           sed -i 's/device.name1=/device.name1=cheeseburger/g' anykernel.sh
           sed -i 's/device.name2=/device.name2=dumpling/g' anykernel.sh
           sed -i 's/device.name3=/device.name3=OnePlus5/g' anykernel.sh
           sed -i 's/device.name4=/device.name4=OnePlus5T/g' anykernel.sh
           sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.1/by-name/boot;|block=/dev/block/bootdevice/by-name/boot;|g' anykernel.sh
-          
-          # 替换为修补后嵌入了 Re-Kernel 的内核镜像
+
+          # 替换为嵌入了 APatch 与 Re-Kernel 的修补镜像
           cp ../apatch_env/Image.gz-dtb-patched ./Image.gz-dtb
-          
-          # 打包 ZIP
+
+          # 移除 git 跟踪并压缩为 ZIP 刷机包
+          rm -rf .git
           ZIP_NAME="blu_spark_APatch_ReKernel_OP5_5T_$(date +%Y%m%d_%H%M%S).zip"
-          zip -r9 "$ZIP_NAME" * -x .git README.md *placeholder
-          
+          zip -r9 "$ZIP_NAME" * -x README.md *placeholder
+
           echo "ZIP_PATH=AnyKernel3/$ZIP_NAME" >> $GITHUB_ENV
           echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
 
-      - name: Upload Final Flashable ZIP
+      - name: Upload Flashable Kernel ZIP
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ZIP_NAME }}
