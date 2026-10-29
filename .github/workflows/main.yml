@@ -182,9 +182,14 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           
-          # 清除源码中不兼容的复合 CPU 架构参数
+          # 1. 清除源码中不兼容的复合 CPU 架构参数
           find . -name "*.mk" -o -name "Makefile" -o -name "Kconfig*" | xargs sed -i 's/-mcpu=cortex-a73\.cortex-a53/-mcpu=cortex-a73/g' || true
           find . -name "*.mk" -o -name "Makefile" -o -name "Kconfig*" | xargs sed -i 's/-mtune=cortex-a73\.cortex-a53/-mtune=cortex-a73/g' || true
+
+          # 2. 核心大招：直接清空 VDSO 的 Makefile 规则，彻底避开汇编器报错
+          if [ -f arch/arm64/kernel/vdso/Makefile ]; then
+              echo "obj-y := " > arch/arm64/kernel/vdso/Makefile
+          fi
 
           export KERNEL_CMDLINE="O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$(pwd)/toolchain/gcc64/bin/aarch64-linux-android- CROSS_COMPILE_ARM32=$(pwd)/toolchain/gcc32/bin/arm-linux-androideabi-"
 
@@ -195,7 +200,7 @@ jobs:
           mkdir -p out
           make $KERNEL_CMDLINE $KERNEL_DEFCONFIG
 
-          # 开启必要宏
+          # 3. 开启必要宏
           sed -i 's/# CONFIG_KALLSYMS is not set/CONFIG_KALLSYMS=y/g' out/.config
           sed -i 's/# CONFIG_KALLSYMS_ALL is not set/CONFIG_KALLSYMS_ALL=y/g' out/.config
           sed -i 's/# CONFIG_MODULES is not set/CONFIG_MODULES=y/g' out/.config
@@ -208,11 +213,6 @@ jobs:
           sed -i 's/# CONFIG_SWAP is not set/CONFIG_SWAP=y/g' out/.config
 
           make $KERNEL_CMDLINE olddefconfig
-
-          # 核心修复：在 olddefconfig 之后，强制关闭 CONFIG_VDSO 并清空 VDSO 规则，防止 Clang 汇编报错
-          sed -i '/CONFIG_VDSO/d' out/.config
-          echo "CONFIG_VDSO=n" >> out/.config
-
           make $KERNEL_CMDLINE -j$(nproc --all)
 
       - name: Prepare AnyKernel3 & Package Flashable ZIP
