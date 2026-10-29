@@ -33,10 +33,12 @@ jobs:
             zlib1g-dev python3 cpio device-tree-compiler \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
-      - name: Clone AOSP Clang 10 Toolchain
+      - name: Download AOSP Clang 10 Toolchain
         run: |
-          # 使用 LineageOS 提取的精简版 Clang 10 (专用于 Android 10 内核编译，极其稳定)
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r365631c.git clang
+          # 使用 curl 直连 Google 官方源码服务器获取 clang-r365631c
+          curl -fL -o clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-10.0.0_r47/clang-r365631c.tar.gz"
+          mkdir -p clang
+          tar -xzf clang.tar.gz -C clang
           
           # 将其加入 PATH
           echo "$PWD/clang/bin" >> $GITHUB_PATH
