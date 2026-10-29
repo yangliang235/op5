@@ -22,7 +22,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Install host dependencies and Binutils
+      - name: Install host dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential ccache curl flex \
@@ -30,18 +30,22 @@ jobs:
             lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev \
             liblz4-tool libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
             lzop pngcrush rsync schedtool squashfs-tools xsltproc zip \
-            zlib1g-dev python3 cpio device-tree-compiler \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+            zlib1g-dev python3 cpio device-tree-compiler
 
-      - name: Download AOSP Clang 10 Toolchain
+      - name: Download Toolchains (AOSP Clang 10 + AOSP GCC 4.9)
         run: |
-          # 使用 curl 直连 Google 官方源码服务器获取 clang-r365631c
+          # 1. 下载 Google 官方 AOSP Clang 10
           curl -fL -o clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-10.0.0_r47/clang-r365631c.tar.gz"
-          mkdir -p clang
-          tar -xzf clang.tar.gz -C clang
+          mkdir -p clang && tar -xzf clang.tar.gz -C clang
           
-          # 将其加入 PATH
+          # 2. 下载 Google 官方 AOSP GCC 4.9 (64位和32位)
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-10.0.0_r47 gcc64
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-10.0.0_r47 gcc32
+          
+          # 3. 加入 PATH
           echo "$PWD/clang/bin" >> $GITHUB_PATH
+          echo "$PWD/gcc64/bin" >> $GITHUB_PATH
+          echo "$PWD/gcc32/bin" >> $GITHUB_PATH
 
       - name: Patch source (swappiness = 200)
         run: |
@@ -273,12 +277,12 @@ jobs:
           print("Re:Kernel 注入成功。")
           PY
 
-      - name: Configure kernel for APatch (Clang 10)
+      - name: Configure kernel for APatch (Clang 10 + GCC 4.9)
         run: |
           make O=out ARCH=$ARCH CC=clang \
-               CLANG_TRIPLE=aarch64-linux-gnu- \
-               CROSS_COMPILE=aarch64-linux-gnu- \
-               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+               CLANG_TRIPLE=aarch64-linux-android- \
+               CROSS_COMPILE=aarch64-linux-android- \
+               CROSS_COMPILE_ARM32=arm-linux-androideabi- \
                $DEFCONFIG
 
           ./scripts/config --file out/.config \
@@ -299,12 +303,12 @@ jobs:
             fi
           done
 
-      - name: Build kernel (Clang 10)
+      - name: Build kernel (Clang 10 + GCC 4.9)
         run: |
           make -j"$(nproc)" O=out ARCH=$ARCH CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-android- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             Image Image.gz dtbs
 
       - name: Pack AnyKernel3
@@ -314,8 +318,8 @@ jobs:
           cp out/arch/arm64/boot/dtbs/*.dtb anykernel/ 2>/dev/null || true
           
           cd anykernel
-          sed -i 's/device.name1=.*/device.name1=cheeseburger/' anykernel.sh
-          sed -i 's/device.name2=.*/device.name2=dumpling/' anykernel.sh
+          # 按照指南，关闭 devicecheck，防止不认识设备代号而报错
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/' anykernel.sh
           sed -i 's|block=.*|block=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
           
           zip -r "../op5-kernel-rekernel-$(date +%Y%m%d-%H%M).zip" . -x '*.git*'
