@@ -40,11 +40,19 @@ jobs:
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
 
-      - name: Install Dependencies & Download GCC Toolchains
+      - name: Install Dependencies & Download Clang Toolchain
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev libncursesw5-dev zip ccache libelf-dev wget git
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev libncursesw5-dev zip ccache libelf-dev wget git binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
+          # 下载支持 cortex-a73 等现代特性的 AOSP Clang / LLVM 编译链
+          mkdir -p clang
+          cd clang
+          wget -O clang.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android10-release/clang-r353983c.tar.gz
+          tar -xzf clang.tar.gz
+          cd ..
+
+          # 同时拉取配套的 32 位和 64 位 binutils / 库支持
           mkdir -p toolchain
           cd toolchain
           git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64 --depth=1
@@ -167,23 +175,23 @@ jobs:
 
       - name: Configure & Compile Kernel
         run: |
+          export PATH=$(pwd)/clang/bin:$PATH
           export ARCH=arm64
           export SUBARCH=arm64
-          export CROSS_COMPILE=$(pwd)/toolchain/gcc64/bin/aarch64-linux-android-
-          export CROSS_COMPILE_ARM32=$(pwd)/toolchain/gcc32/bin/arm-linux-androideabi-
+          
+          # 设定 Clang 编译参数 (使用 AOSP Clang + GCC 库支持)
+          export KERNEL_CMDLINE="O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=$(pwd)/toolchain/gcc64/bin/aarch64-linux-android- CROSS_COMPILE_ARM32=$(pwd)/toolchain/gcc32/bin/arm-linux-androideabi- LD=ld.lld"
 
           # 1. 彻底清空残余
           rm -rf out/
           make mrproper
           make distclean
 
-          # 2. 显式使用 O=out 规范化编译，完美契合原厂 Makefile 逻辑
+          # 2. 创建输出目录并载入配置
           mkdir -p out
+          make $KERNEL_CMDLINE $KERNEL_DEFCONFIG
 
-          # 3. 载入配置
-          make O=out $KERNEL_DEFCONFIG
-
-          # 4. 开启必要宏 (通过 sed 针对 out/.config 进行注入)
+          # 3. 开启必要宏
           sed -i 's/# CONFIG_KALLSYMS is not set/CONFIG_KALLSYMS=y/g' out/.config
           sed -i 's/# CONFIG_KALLSYMS_ALL is not set/CONFIG_KALLSYMS_ALL=y/g' out/.config
           sed -i 's/# CONFIG_MODULES is not set/CONFIG_MODULES=y/g' out/.config
@@ -195,10 +203,10 @@ jobs:
           sed -i 's/# CONFIG_ZRAM_MEMORY_TRACKING is not set/CONFIG_ZRAM_MEMORY_TRACKING=y/g' out/.config
           sed -i 's/# CONFIG_SWAP is not set/CONFIG_SWAP=y/g' out/.config
 
-          make O=out olddefconfig
+          make $KERNEL_CMDLINE olddefconfig
           
-          # 5. 带 O=out 参数进行多核并行编译
-          make O=out -j$(nproc --all)
+          # 4. 开始多核并行编译
+          make $KERNEL_CMDLINE -j$(nproc --all)
 
       - name: Prepare AnyKernel3 & Package Flashable ZIP
         run: |
@@ -211,7 +219,6 @@ jobs:
           sed -i 's/device.name4=/device.name4=OnePlus5T/g' anykernel.sh
           sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.1/by-name/boot;|block=/dev/block/bootdevice/by-name/boot;|g' anykernel.sh
 
-          # 从 out 目录复制编译产物
           cp ../out/arch/arm64/boot/Image.gz-dtb ./Image.gz-dtb
 
           rm -rf .git
