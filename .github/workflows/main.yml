@@ -1,4 +1,4 @@
-name: Build OP5 Kernel (Re:Kernel + zram-writeback + APatch-Ready)
+name: Build OP5 Kernel (ZRAM-Writeback + Swappiness 200 + Re:Kernel + APatch)
 
 on:
   workflow_dispatch:
@@ -33,15 +33,12 @@ jobs:
             zlib1g-dev python3 cpio device-tree-compiler \
             gcc-10-aarch64-linux-gnu gcc-10-arm-linux-gnueabi
 
-          # 强制将系统默认的 gcc 切换为 GCC 10
           sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-10 100
           sudo update-alternatives --install /usr/bin/arm-linux-gnueabi-gcc arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-10 100
-          
-          echo "--- GCC Version ---"
-          aarch64-linux-gnu-gcc --version
 
-      - name: Patch source (swappiness = 200)
+      - name: Patch source (swappiness = 200 only)
         run: |
+          # 只修改 swappiness 默认值和上限，不动其他的
           sed -i 's/^int vm_swappiness = 60;/int vm_swappiness = 200;/' mm/vmscan.c
           grep -q '^int vm_swappiness = 200;' mm/vmscan.c || { echo "::error::swappiness 默认值修改失败"; exit 1; }
 
@@ -59,10 +56,10 @@ jobs:
           if n == 0:
               print("::error::sysctl swappiness 上限修改失败")
               sys.exit(1)
-          print("swappiness 修改成功。")
+          print("swappiness = 200 修改成功。")
           PY
 
-      - name: Patch ZRAM writeback functionality
+      - name: Patch ZRAM writeback functionality (Bio based)
         run: |
           python3 - <<'PY'
           import re, pathlib, sys, textwrap
@@ -70,14 +67,14 @@ jobs:
           c = pathlib.Path("drivers/block/zram/zram_drv.c")
           hs, cs = h.read_text(), c.read_text()
 
-          # 1. 修改 struct zram 添加 idle 字段
+          # 1. 修改 struct zram
           if "unsigned long *idle;" not in hs:
-              hs = re.sub(r"(struct gendisk\s*\*disk;)", r"\1\n\tunsigned long *idle;\n\tatomic64_t nr_idle_pages;", hs, count=1)
+              hs = re.sub(r"(struct gendisk\s*\*disk;)", r"\1\n\tstruct block_device *bdev;\n\tunsigned long *idle;\n\tunsigned long *wb_bitmap;\n\tatomic64_t nr_idle_pages;", hs, count=1)
               if "unsigned long *idle;" not in hs:
-                  hs = re.sub(r"(struct zram \{)", r"\1\n\tunsigned long *idle;\n\tatomic64_t nr_idle_pages;", hs, count=1)
+                  hs = re.sub(r"(struct zram \{)", r"\1\n\tstruct block_device *bdev;\n\tunsigned long *idle;\n\tunsigned long *wb_bitmap;\n\tatomic64_t nr_idle_pages;", hs, count=1)
               h.write_text(hs)
 
-          # 2. 注入函数定义（确保放在 #include "zram_drv.h" 之后）
+          # 2. 注入 idle 标记函数
           if "zram_mark_object_idle" not in cs:
               mark_func = textwrap.dedent("""
               enum idle_flag { IDLE_OLD, IDLE_NEW };
@@ -98,22 +95,8 @@ jobs:
               """)
               if '#include "zram_drv.h"' in cs:
                   cs = cs.replace('#include "zram_drv.h"', '#include "zram_drv.h"\n' + mark_func, 1)
-              elif '#include <linux/vmalloc.h>' in cs:
-                  cs = cs.replace('#include <linux/vmalloc.h>', '#include <linux/vmalloc.h>\n' + mark_func, 1)
-              else:
-                  cs = cs.replace('#include <linux/blkdev.h>', '#include <linux/blkdev.h>\n' + mark_func, 1)
 
-          # 3. 在 zram_slot_free_notify 中注入 IDLE_OLD
-          if "zram_mark_object_idle(zram, index, IDLE_OLD)" not in cs:
-              cs = re.sub(r"(static void zram_slot_free_notify\(.*?\{.*?)zram_free_page\(zram, index\);",
-                          r"\1zram_free_page(zram, index);\n\tzram_mark_object_idle(zram, index, IDLE_OLD);", cs, count=1, flags=re.S)
-
-          # 4. 在 __zram_bvec_write 中注入 IDLE_NEW
-          if "zram_mark_object_idle(zram, index, IDLE_NEW)" not in cs:
-              cs = re.sub(r"(static int __zram_bvec_write\(.*?\{.*?)zram_slot_lock\(zram, index\);",
-                          r"\1zram_slot_lock(zram, index);\n\tzram_mark_object_idle(zram, index, IDLE_NEW);", cs, count=1, flags=re.S)
-
-          # 5. sysfs 接口
+          # 3. 注入 sysfs 节点与 bio 读写函数
           if "dev_attr_backing_dev" not in cs:
               sysfs_code = textwrap.dedent("""
               static ssize_t backing_dev_show(struct device *dev, struct device_attribute *attr, char *buf) {
@@ -122,8 +105,88 @@ jobs:
                   if (zram->bdev) p += sprintf(p, "%s\\n", zram->bdev->bd_disk->disk_name);
                   up_read(&zram->init_lock); return p - buf;
               }
-              static ssize_t backing_dev_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t len) { return len; }
-              static ssize_t writeback_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t len) { return len; }
+              static ssize_t backing_dev_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t len) {
+                  struct zram *zram = dev_to_zram(dev);
+                  struct block_device *bdev;
+                  char *path;
+                  if (!zram->disksize) return -ENODEV;
+                  path = strim((char *)buf);
+                  if (strlen(path) >= len) return -EINVAL;
+                  bdev = blkdev_get_by_path(path, FMODE_READ | FMODE_WRITE, NULL);
+                  if (IS_ERR(bdev)) return PTR_ERR(bdev);
+                  down_write(&zram->init_lock);
+                  if (zram->bdev) blkdev_put(zram->bdev, FMODE_READ | FMODE_WRITE);
+                  zram->bdev = bdev;
+                  up_write(&zram->init_lock);
+                  return len;
+              }
+              static int zram_writeback_page(struct zram *zram, unsigned long index, struct page *page) {
+                  struct bio *bio;
+                  int ret;
+                  bio = bio_alloc(GFP_NOIO, 1);
+                  if (!bio) return -ENOMEM;
+                  bio->bi_iter.bi_sector = (sector_t)index * (PAGE_SIZE >> 9);
+                  bio->bi_bdev = zram->bdev;
+                  bio->bi_rw = WRITE;
+                  if (!bio_add_page(bio, page, PAGE_SIZE, 0)) {
+                      bio_put(bio);
+                      return -EINVAL;
+                  }
+                  ret = submit_bio_wait(bio);
+                  bio_put(bio);
+                  return ret;
+              }
+              static int zram_readback_page(struct zram *zram, unsigned long index, struct page *page) {
+                  struct bio *bio;
+                  int ret;
+                  bio = bio_alloc(GFP_NOIO, 1);
+                  if (!bio) return -ENOMEM;
+                  bio->bi_iter.bi_sector = (sector_t)index * (PAGE_SIZE >> 9);
+                  bio->bi_bdev = zram->bdev;
+                  bio->bi_rw = READ;
+                  if (!bio_add_page(bio, page, PAGE_SIZE, 0)) {
+                      bio_put(bio);
+                      return -EINVAL;
+                  }
+                  ret = submit_bio_wait(bio);
+                  bio_put(bio);
+                  return ret;
+              }
+              static ssize_t writeback_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t len) {
+                  struct zram *zram = dev_to_zram(dev);
+                  unsigned long index;
+                  struct page *page;
+                  int ret = 0;
+                  int mode = 0;
+                  if (!zram->bdev) return -ENODEV;
+                  if (!strncmp(buf, "idle", 4)) mode = 1;
+                  else if (!strncmp(buf, "all", 3)) mode = 2;
+                  else return -EINVAL;
+                  page = alloc_page(GFP_NOIO);
+                  if (!page) return -ENOMEM;
+                  for (index = 0; index < (zram->disksize >> PAGE_SHIFT); index++) {
+                      if (mode == 1 && !test_bit(index, zram->idle)) continue;
+                      if (test_bit(index, zram->wb_bitmap)) continue;
+                      down_read(&zram->init_lock);
+                      if (zram->disksize == 0) { up_read(&zram->init_lock); break; }
+                      zram_slot_lock(zram, index);
+                      if (zram_get_element(zram, index)) {
+                          struct bio_vec bvec = { .bv_page = page, .bv_len = PAGE_SIZE, .bv_offset = 0 };
+                          ret = zram_bvec_read(zram, &bvec, index, 0, NULL);
+                          if (ret == 0) {
+                              ret = zram_writeback_page(zram, index, page);
+                              if (ret == 0) {
+                                  __set_bit(index, zram->wb_bitmap);
+                                  zram_free_page(zram, index);
+                              }
+                          }
+                      }
+                      zram_slot_unlock(zram, index);
+                      up_read(&zram->init_lock);
+                  }
+                  __free_page(page);
+                  return len;
+              }
               static ssize_t idle_show(struct device *dev, struct device_attribute *attr, char *buf) { return sprintf(buf, "%lu\\n", atomic64_read(&zram->nr_idle_pages)); }
               static DEVICE_ATTR_RW(backing_dev);
               static DEVICE_ATTR_WO(writeback);
@@ -131,15 +194,47 @@ jobs:
               """)
               cs = cs.replace("static struct attribute *zram_disk_attrs[] = {", sysfs_code + "\nstatic struct attribute *zram_disk_attrs[] = {\n\t&dev_attr_backing_dev.attr,\n\t&dev_attr_writeback.attr,\n\t&dev_attr_idle.attr,")
 
-          # 6. 初始化与释放
+          # 4. 在 zram_bvec_read 注入读回逻辑
+          if "zram->bdev && test_bit(index, zram->wb_bitmap)" not in cs:
+              read_inject = textwrap.dedent("""
+                  if (unlikely(!zram_get_element(zram, index))) {
+                      if (zram->bdev && test_bit(index, zram->wb_bitmap)) {
+                          int ret = zram_readback_page(zram, index, bvec->bv_page);
+                          if (ret) {
+                              pr_err("zram: readback failed at index %lu, ret %d\\n", index, ret);
+                              return ret;
+                          }
+                          return 0;
+                      }
+                      return 0;
+                  }
+              """)
+              cs = re.sub(r"if \(unlikely\(!zram_get_element\(zram, index\)\)\)\s*return 0;", read_inject, cs, count=1)
+
+          # 5. 在 zram_bvec_write 注入清除 wb_bitmap
+          if "__clear_bit(index, zram->wb_bitmap)" not in cs:
+              cs = re.sub(r"(zram_mark_object_idle\(zram, index, IDLE_NEW\);)",
+                          r"\1\n\t__clear_bit(index, zram->wb_bitmap);", cs, count=1)
+
+          # 6. 在 zram_slot_free_notify 中注入 IDLE_OLD
+          if "zram_mark_object_idle(zram, index, IDLE_OLD)" not in cs:
+              cs = re.sub(r"(static void zram_slot_free_notify\(.*?\{.*?)zram_free_page\(zram, index\);",
+                          r"\1zram_free_page(zram, index);\n\tzram_mark_object_idle(zram, index, IDLE_OLD);", cs, count=1, flags=re.S)
+
+          # 7. 在 __zram_bvec_write 中注入 IDLE_NEW
+          if "zram_mark_object_idle(zram, index, IDLE_NEW)" not in cs:
+              cs = re.sub(r"(static int __zram_bvec_write\(.*?\{.*?)zram_slot_lock\(zram, index\);",
+                          r"\1zram_slot_lock(zram, index);\n\tzram_mark_object_idle(zram, index, IDLE_NEW);", cs, count=1, flags=re.S)
+
+          # 8. 初始化和释放
           if "zram->idle = kzalloc" not in cs:
-              cs = cs.replace("zram->disksize = disksize;", "zram->disksize = disksize;\n\tzram->idle = kzalloc(BITS_TO_LONGS(disksize >> PAGE_SHIFT) * sizeof(long), GFP_KERNEL);\n\tatomic64_set(&zram->nr_idle_pages, 0);")
+              cs = cs.replace("zram->disksize = disksize;", "zram->disksize = disksize;\n\tzram->idle = kzalloc(BITS_TO_LONGS(disksize >> PAGE_SHIFT) * sizeof(long), GFP_KERNEL);\n\tzram->wb_bitmap = kzalloc(BITS_TO_LONGS(disksize >> PAGE_SHIFT) * sizeof(long), GFP_KERNEL);\n\tatomic64_set(&zram->nr_idle_pages, 0);")
 
           if "kfree(zram->idle)" not in cs:
-              cs = cs.replace("zram->disksize = 0;", "zram->disksize = 0;\n\tif (zram->idle) {\n\t\tkfree(zram->idle);\n\t\tzram->idle = NULL;\n\t}")
+              cs = cs.replace("zram->disksize = 0;", "zram->disksize = 0;\n\tif (zram->idle) { kfree(zram->idle); zram->idle = NULL; }\n\tif (zram->wb_bitmap) { kfree(zram->wb_bitmap); zram->wb_bitmap = NULL; }")
 
           c.write_text(cs)
-          if "zram_mark_object_idle" not in c.read_text() or "zram->idle = kzalloc" not in c.read_text():
+          if "zram_mark_object_idle" not in c.read_text() or "zram_writeback_page" not in c.read_text():
               print("::error::ZRAM 回写功能注入失败")
               sys.exit(1)
           print("zram writeback 注入成功。")
@@ -150,7 +245,6 @@ jobs:
           python3 - <<'PY'
           import re, pathlib, sys, textwrap
           
-          # 移除 linux/sched/jobctl.h，兼容 4.4 内核
           header = textwrap.dedent("""\
           #ifndef _LINUX_REKERNEL_H
           #define _LINUX_REKERNEL_H
@@ -327,23 +421,15 @@ jobs:
           cp out/arch/arm64/boot/dtbs/*.dtb anykernel/ 2>/dev/null || true
           
           cd anykernel
-          # 修改内核显示名称
-          sed -i 's/^kernel.string=.*/kernel.string=ReKernel-zram-kernel by yangliang235/' anykernel.sh
-          
-          # 修改设备代号 (OnePlus 5: cheeseburger, 5T: dumpling)
+          sed -i 's/^kernel.string=.*/kernel.string=ReKernel-ZRAM-Writeback/' anykernel.sh
           sed -i 's/^device.name1=.*/device.name1=cheeseburger/' anykernel.sh
           sed -i 's/^device.name2=.*/device.name2=dumpling/' anykernel.sh
           sed -i 's/^device.name3=.*/device.name3=/' anykernel.sh
           sed -i 's/^device.name4=.*/device.name4=/' anykernel.sh
           sed -i 's/^device.name5=.*/device.name5=/' anykernel.sh
           
-          # 修改分区路径 (注意默认配置里是大写的 BLOCK)
           sed -i 's|^BLOCK=.*|BLOCK=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
-          
-          # 确保为 A-only 分区设备 (OnePlus 5/5T 为 A-only)
           sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0/' anykernel.sh
-          
-          # 为了防止刷入失败，保留强制关闭设备检查
           sed -i 's/^do.devicecheck=.*/do.devicecheck=0/' anykernel.sh
           
           zip -r "../op5-kernel-rekernel-$(date +%Y%m%d-%H%M).zip" . -x '*.git*'
