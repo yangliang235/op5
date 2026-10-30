@@ -34,11 +34,13 @@ jobs:
 
       - name: Download Toolchains (AOSP Clang 10 + AOSP GCC 4.9)
         run: |
-          # 1. 下载 Google 官方 AOSP Clang 10
-          curl -fL -o clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-10.0.0_r47/clang-r365631c.tar.gz"
-          mkdir -p clang && tar -xzf clang.tar.gz -C clang
+          set -e
+          # 1. 下载极其稳定的 AOSP Clang 10 (从 Github 预编译源下载，避开 Google 服务器的 400 拦截)
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/10.0.0-r365631c/Clang-10.0.0-r365631c.tar.gz
+          mkdir -p clang && tar -xzf Clang-10.0.0-r365631c.tar.gz -C clang
           
-          # 2. 下载 Google 官方 AOSP GCC 4.9 (64位和32位)
+          # 2. 下载 AOSP GCC 4.9 (来自 Google 官方源，并防止 Git 卡死)
+          export GIT_TERMINAL_PROMPT=0
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-10.0.0_r47 gcc64
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-10.0.0_r47 gcc32
           
@@ -46,6 +48,12 @@ jobs:
           echo "$PWD/clang/bin" >> $GITHUB_PATH
           echo "$PWD/gcc64/bin" >> $GITHUB_PATH
           echo "$PWD/gcc32/bin" >> $GITHUB_PATH
+          
+          # 4. 打印版本验证
+          echo "--- Clang Version ---"
+          $PWD/clang/bin/clang --version
+          echo "--- GCC Version ---"
+          $PWD/gcc64/bin/aarch64-linux-android-gcc --version
 
       - name: Patch source (swappiness = 200)
         run: |
