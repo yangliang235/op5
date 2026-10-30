@@ -327,8 +327,24 @@ jobs:
           cp out/arch/arm64/boot/dtbs/*.dtb anykernel/ 2>/dev/null || true
           
           cd anykernel
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/' anykernel.sh
-          sed -i 's|block=.*|block=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
+          # 修改内核显示名称
+          sed -i 's/^kernel.string=.*/kernel.string=ReKernel-zram-kernel by yangliang235/' anykernel.sh
+          
+          # 修改设备代号 (OnePlus 5: cheeseburger, 5T: dumpling)
+          sed -i 's/^device.name1=.*/device.name1=cheeseburger/' anykernel.sh
+          sed -i 's/^device.name2=.*/device.name2=dumpling/' anykernel.sh
+          sed -i 's/^device.name3=.*/device.name3=/' anykernel.sh
+          sed -i 's/^device.name4=.*/device.name4=/' anykernel.sh
+          sed -i 's/^device.name5=.*/device.name5=/' anykernel.sh
+          
+          # 修改分区路径 (注意默认配置里是大写的 BLOCK)
+          sed -i 's|^BLOCK=.*|BLOCK=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
+          
+          # 确保为 A-only 分区设备 (OnePlus 5/5T 为 A-only)
+          sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0/' anykernel.sh
+          
+          # 为了防止刷入失败，保留强制关闭设备检查
+          sed -i 's/^do.devicecheck=.*/do.devicecheck=0/' anykernel.sh
           
           zip -r "../op5-kernel-rekernel-$(date +%Y%m%d-%H%M).zip" . -x '*.git*'
 
