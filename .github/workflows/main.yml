@@ -133,6 +133,7 @@ jobs:
           python3 - <<'PY'
           import re, pathlib, sys, textwrap
           
+          # 注意：这里移除了 linux/sched/jobctl.h，以兼容 Linux 4.4
           header = textwrap.dedent("""\
           #ifndef _LINUX_REKERNEL_H
           #define _LINUX_REKERNEL_H
@@ -142,7 +143,6 @@ jobs:
           #include <linux/netlink.h>
           #include <linux/proc_fs.h>
           #include <linux/freezer.h>
-          #include <linux/sched/jobctl.h>
           #define NETLINK_REKERNEL_MAX 26
           #define NETLINK_REKERNEL_MIN 22
           #define USER_PORT 100
