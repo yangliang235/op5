@@ -22,7 +22,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Install host dependencies
+      - name: Install host dependencies and GCC 10
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential ccache curl flex \
@@ -30,28 +30,16 @@ jobs:
             lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev \
             liblz4-tool libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
             lzop pngcrush rsync schedtool squashfs-tools xsltproc zip \
-            zlib1g-dev python3 cpio device-tree-compiler
+            zlib1g-dev python3 cpio device-tree-compiler \
+            gcc-10-aarch64-linux-gnu gcc-10-arm-linux-gnueabi
 
-      - name: Download Toolchains (AOSP Clang 10 + AOSP GCC 4.9)
-        run: |
-          set -e
-          # 1. 从 GitHub 的 AOSP 官方镜像获取 Clang 10，彻底避开 Google 服务器的 400 拦截
-          git clone --depth=1 https://github.com/aosp-mirror/platform_prebuilts_clang_host_linux-x86 -b android-10.0.0_r47 clang
+          # 强制将系统默认的 gcc 切换为 GCC 10（GCC 11 移除了对 cortex-a73.cortex-a53 的支持）
+          sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-10 100
+          sudo update-alternatives --install /usr/bin/arm-linux-gnueabi-gcc arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-10 100
           
-          # 2. 从 GitHub 的 AOSP 官方镜像获取 GCC 4.9 (64位和32位)
-          git clone --depth=1 https://github.com/aosp-mirror/platform_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 -b android-10.0.0_r47 gcc64
-          git clone --depth=1 https://github.com/aosp-mirror/platform_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 -b android-10.0.0_r47 gcc32
-          
-          # 3. 加入 PATH
-          echo "$PWD/clang/bin" >> $GITHUB_PATH
-          echo "$PWD/gcc64/bin" >> $GITHUB_PATH
-          echo "$PWD/gcc32/bin" >> $GITHUB_PATH
-          
-          # 4. 打印版本验证
-          echo "--- Clang Version ---"
-          $PWD/clang/bin/clang --version
+          # 打印版本验证
           echo "--- GCC Version ---"
-          $PWD/gcc64/bin/aarch64-linux-android-gcc --version
+          aarch64-linux-gnu-gcc --version
 
       - name: Patch source (swappiness = 200)
         run: |
@@ -283,12 +271,11 @@ jobs:
           print("Re:Kernel 注入成功。")
           PY
 
-      - name: Configure kernel for APatch (Clang 10 + GCC 4.9)
+      - name: Configure kernel for APatch (GCC 10)
         run: |
-          make O=out ARCH=$ARCH CC=clang \
-               CLANG_TRIPLE=aarch64-linux-android- \
-               CROSS_COMPILE=aarch64-linux-android- \
-               CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+          make O=out ARCH=$ARCH \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                $DEFCONFIG
 
           ./scripts/config --file out/.config \
@@ -309,12 +296,11 @@ jobs:
             fi
           done
 
-      - name: Build kernel (Clang 10 + GCC 4.9)
+      - name: Build kernel (GCC 10)
         run: |
-          make -j"$(nproc)" O=out ARCH=$ARCH CC=clang \
-            CLANG_TRIPLE=aarch64-linux-android- \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+          make -j"$(nproc)" O=out ARCH=$ARCH \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             Image Image.gz dtbs
 
       - name: Pack AnyKernel3
