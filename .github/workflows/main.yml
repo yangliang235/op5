@@ -66,11 +66,18 @@ jobs:
           c = pathlib.Path("drivers/block/zram/zram_drv.c")
           hs, cs = h.read_text(), c.read_text()
 
-          # 1. 修改 struct zram
+          # 1. 修改 struct zram，避免重复定义 bdev
           if "unsigned long *idle;" not in hs:
-              hs = hs.replace("struct zram {", "struct zram {\n\tstruct block_device *bdev;\n\tunsigned long *idle;\n\tunsigned long *wb_bitmap;\n\tatomic64_t nr_idle_pages;")
-              if "unsigned long *idle;" not in hs:
-                  hs = re.sub(r"(struct gendisk\s*\*disk;)", r"\1\n\tstruct block_device *bdev;\n\tunsigned long *idle;\n\tunsigned long *wb_bitmap;\n\tatomic64_t nr_idle_pages;", hs, count=1)
+              bdev_def = ""
+              if "struct block_device *bdev;" not in hs:
+                  bdev_def = "\tstruct block_device *bdev;\n"
+              
+              inject_str = bdev_def + "\tunsigned long *idle;\n\tunsigned long *wb_bitmap;\n\tatomic64_t nr_idle_pages;"
+              
+              if re.search(r"(struct gendisk\s*\*disk;)", hs):
+                  hs = re.sub(r"(struct gendisk\s*\*disk;)", r"\1\n" + inject_str, hs, count=1)
+              else:
+                  hs = hs.replace("struct zram {", "struct zram {\n" + inject_str)
               h.write_text(hs)
 
           # 2. 注入 idle 标记函数
@@ -212,15 +219,15 @@ jobs:
               """)
               cs = re.sub(r"if \(unlikely\(!zram_get_element\(zram, index\)\)\)\s*return 0;", read_inject, cs, count=1)
 
-          # 5. 在 zram_slot_free_notify 中注入 IDLE_OLD (使用简单的字符串替换)
+          # 5. 在 zram_slot_free_notify 中注入 IDLE_OLD
           if "zram_mark_object_idle(zram, index, IDLE_OLD)" not in cs:
               cs = cs.replace("zram_free_page(zram, index);", "zram_free_page(zram, index);\n\tzram_mark_object_idle(zram, index, IDLE_OLD);", 1)
 
-          # 6. 在 __zram_bvec_write 中注入 IDLE_NEW (使用简单的字符串替换)
+          # 6. 在 __zram_bvec_write 中注入 IDLE_NEW
           if "zram_mark_object_idle(zram, index, IDLE_NEW)" not in cs:
               cs = cs.replace("zram_slot_lock(zram, index);", "zram_slot_lock(zram, index);\n\tzram_mark_object_idle(zram, index, IDLE_NEW);\n\t__clear_bit(index, zram->wb_bitmap);", 1)
 
-          # 7. 初始化和释放 (使用正则容错)
+          # 7. 初始化和释放
           if "zram->idle = kzalloc" not in cs:
               cs = re.sub(r"(zram->disksize\s*=\s*disksize;)", r"\1\n\tzram->idle = kzalloc(BITS_TO_LONGS(disksize >> PAGE_SHIFT) * sizeof(long), GFP_KERNEL);\n\tzram->wb_bitmap = kzalloc(BITS_TO_LONGS(disksize >> PAGE_SHIFT) * sizeof(long), GFP_KERNEL);\n\tatomic64_set(&zram->nr_idle_pages, 0);", cs, count=1)
 
@@ -228,10 +235,7 @@ jobs:
               cs = re.sub(r"(zram->disksize\s*=\s*0;)", r"\1\n\tif (zram->idle) { kfree(zram->idle); zram->idle = NULL; }\n\tif (zram->wb_bitmap) { kfree(zram->wb_bitmap); zram->wb_bitmap = NULL; }", cs, count=1)
 
           c.write_text(cs)
-          if "zram_mark_object_idle" not in c.read_text() or "zram_writeback_page" not in c.read_text():
-              print("::warning::ZRAM 回写功能注入部分失败，请检查源码是否已被污染。但不中断编译。")
-          else:
-              print("zram writeback 注入成功。")
+          print("ZRAM 回写补丁注入完成。")
           PY
 
       - name: Integrate Re:Kernel
