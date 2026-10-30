@@ -58,7 +58,7 @@ jobs:
           print("swappiness = 200 修改成功。")
           PY
 
-      - name: Patch ZRAM writeback functionality (Bio based)
+      - name: Patch ZRAM writeback functionality (Deadlock Free)
         run: |
           python3 - <<'PY'
           import re, pathlib, textwrap
@@ -80,7 +80,7 @@ jobs:
                   hs = hs.replace("struct zram {", "struct zram {\n" + inject_str)
               h.write_text(hs)
 
-          # 2. 注入 idle 标记函数
+          # 2. 注入安全版 idle 标记函数（只操作位图，不加锁）
           if "zram_mark_object_idle" not in cs:
               mark_func = textwrap.dedent("""
               enum idle_flag { IDLE_OLD, IDLE_NEW };
@@ -104,7 +104,7 @@ jobs:
               else:
                   cs = cs.replace('#include <linux/blkdev.h>', '#include <linux/blkdev.h>\n' + mark_func, 1)
 
-          # 3. 注入 sysfs 节点与 bio 读写函数
+          # 3. 注入 sysfs 节点与读写函数（解除嵌套锁）
           if "dev_attr_backing_dev" not in cs:
               sysfs_code = textwrap.dedent("""
               static ssize_t backing_dev_show(struct device *dev, struct device_attribute *attr, char *buf) {
@@ -136,10 +136,7 @@ jobs:
                   bio->bi_iter.bi_sector = (sector_t)index * (PAGE_SIZE >> 9);
                   bio->bi_bdev = zram->bdev;
                   bio->bi_rw = WRITE;
-                  if (!bio_add_page(bio, page, PAGE_SIZE, 0)) {
-                      bio_put(bio);
-                      return -EINVAL;
-                  }
+                  if (!bio_add_page(bio, page, PAGE_SIZE, 0)) { bio_put(bio); return -EINVAL; }
                   ret = submit_bio_wait(bio);
                   bio_put(bio);
                   return ret;
@@ -152,10 +149,7 @@ jobs:
                   bio->bi_iter.bi_sector = (sector_t)index * (PAGE_SIZE >> 9);
                   bio->bi_bdev = zram->bdev;
                   bio->bi_rw = READ;
-                  if (!bio_add_page(bio, page, PAGE_SIZE, 0)) {
-                      bio_put(bio);
-                      return -EINVAL;
-                  }
+                  if (!bio_add_page(bio, page, PAGE_SIZE, 0)) { bio_put(bio); return -EINVAL; }
                   ret = submit_bio_wait(bio);
                   bio_put(bio);
                   return ret;
@@ -173,23 +167,25 @@ jobs:
                   page = alloc_page(GFP_NOIO);
                   if (!page) return -ENOMEM;
                   for (index = 0; index < (zram->disksize >> PAGE_SHIFT); index++) {
-                      if (mode == 1 && !test_bit(index, zram->idle)) continue;
-                      if (test_bit(index, zram->wb_bitmap)) continue;
+                      if (mode == 1 && zram->idle && !test_bit(index, zram->idle)) continue;
+                      if (zram->wb_bitmap && test_bit(index, zram->wb_bitmap)) continue;
                       down_read(&zram->init_lock);
                       if (zram->disksize == 0) { up_read(&zram->init_lock); break; }
-                      zram_slot_lock(zram, index);
+                      
+                      /* 这里不要加 zram_slot_lock，让 zram_bvec_read 自己处理 */
                       if (zram_get_element(zram, index)) {
                           struct bio_vec bvec = { .bv_page = page, .bv_len = PAGE_SIZE, .bv_offset = 0 };
                           ret = zram_bvec_read(zram, &bvec, index, 0, NULL);
                           if (ret == 0) {
                               ret = zram_writeback_page(zram, index, page);
                               if (ret == 0) {
-                                  __set_bit(index, zram->wb_bitmap);
+                                  if (zram->wb_bitmap) __set_bit(index, zram->wb_bitmap);
+                                  zram_slot_lock(zram, index);
                                   zram_free_page(zram, index);
+                                  zram_slot_unlock(zram, index);
                               }
                           }
                       }
-                      zram_slot_unlock(zram, index);
                       up_read(&zram->init_lock);
                   }
                   __free_page(page);
@@ -206,7 +202,7 @@ jobs:
           if "zram->bdev && test_bit(index, zram->wb_bitmap)" not in cs:
               read_inject = textwrap.dedent("""
                   if (unlikely(!zram_get_element(zram, index))) {
-                      if (zram->bdev && test_bit(index, zram->wb_bitmap)) {
+                      if (zram->bdev && zram->wb_bitmap && test_bit(index, zram->wb_bitmap)) {
                           int ret = zram_readback_page(zram, index, bvec->bv_page);
                           if (ret) {
                               pr_err("zram: readback failed at index %lu, ret %d\\n", index, ret);
@@ -219,13 +215,13 @@ jobs:
               """)
               cs = re.sub(r"if \(unlikely\(!zram_get_element\(zram, index\)\)\)\s*return 0;", read_inject, cs, count=1)
 
-          # 5. 在 zram_slot_free_notify 中注入 IDLE_OLD
+          # 5. 在 zram_slot_free_notify 中注入 IDLE_OLD (防止死锁)
           if "zram_mark_object_idle(zram, index, IDLE_OLD)" not in cs:
               cs = cs.replace("zram_free_page(zram, index);", "zram_free_page(zram, index);\n\tzram_mark_object_idle(zram, index, IDLE_OLD);", 1)
 
           # 6. 在 __zram_bvec_write 中注入 IDLE_NEW
           if "zram_mark_object_idle(zram, index, IDLE_NEW)" not in cs:
-              cs = cs.replace("zram_slot_lock(zram, index);", "zram_slot_lock(zram, index);\n\tzram_mark_object_idle(zram, index, IDLE_NEW);\n\t__clear_bit(index, zram->wb_bitmap);", 1)
+              cs = cs.replace("zram_slot_lock(zram, index);", "zram_slot_lock(zram, index);\n\tzram_mark_object_idle(zram, index, IDLE_NEW);\n\tif (zram->wb_bitmap) __clear_bit(index, zram->wb_bitmap);", 1)
 
           # 7. 初始化和释放
           if "zram->idle = kzalloc" not in cs:
