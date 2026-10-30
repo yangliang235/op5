@@ -35,14 +35,12 @@ jobs:
       - name: Download Toolchains (AOSP Clang 10 + AOSP GCC 4.9)
         run: |
           set -e
-          # 1. 下载 Google 官方 AOSP Clang 10 (加入 User-Agent 头，绕过 400 拦截)
-          curl -fL -H "User-Agent: Mozilla/5.0" -o clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-10.0.0_r47/clang-r365631c.tar.gz"
-          mkdir -p clang && tar -xzf clang.tar.gz -C clang
+          # 1. 从 GitHub 的 AOSP 官方镜像获取 Clang 10，彻底避开 Google 服务器的 400 拦截
+          git clone --depth=1 https://github.com/aosp-mirror/platform_prebuilts_clang_host_linux-x86 -b android-10.0.0_r47 clang
           
-          # 2. 下载 AOSP GCC 4.9 (直接拉取默认分支，最稳定)
-          export GIT_TERMINAL_PROMPT=0
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
+          # 2. 从 GitHub 的 AOSP 官方镜像获取 GCC 4.9 (64位和32位)
+          git clone --depth=1 https://github.com/aosp-mirror/platform_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 -b android-10.0.0_r47 gcc64
+          git clone --depth=1 https://github.com/aosp-mirror/platform_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 -b android-10.0.0_r47 gcc32
           
           # 3. 加入 PATH
           echo "$PWD/clang/bin" >> $GITHUB_PATH
