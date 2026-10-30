@@ -1,4 +1,4 @@
-name: Build OP5 Kernel (ZRAM-Writeback + Swappiness 200 + Re:Kernel + APatch)
+name: Build OP5 Recovery Flashable Zip (GCC 11 + Swappiness 200 + APatch/KPM Ready)
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Install host dependencies and GCC 10
+      - name: Install host dependencies and GCC 11
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential ccache curl flex \
@@ -31,16 +31,18 @@ jobs:
             liblz4-tool libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
             lzop pngcrush rsync schedtool squashfs-tools xsltproc zip \
             zlib1g-dev python3 cpio device-tree-compiler \
-            gcc-10-aarch64-linux-gnu gcc-10-arm-linux-gnueabi
+            gcc-11-aarch64-linux-gnu gcc-11-arm-linux-gnueabi
 
-          sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-10 100
-          sudo update-alternatives --install /usr/bin/arm-linux-gnueabi-gcc arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-10 100
+          sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-11 100
+          sudo update-alternatives --install /usr/bin/arm-linux-gnueabi-gcc arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-11 100
 
       - name: Patch source (swappiness = 200)
         run: |
+          # 1. 修改内存扫描源码中的默认 vm_swappiness
           sed -i 's/^int vm_swappiness = 60;/int vm_swappiness = 200;/' mm/vmscan.c
           grep -q '^int vm_swappiness = 200;' mm/vmscan.c || { echo "::error::swappiness 默认值修改失败"; exit 1; }
 
+          # 2. 修改 sysctl 上限，允许调整到 200
           python3 - <<'PY'
           import re, pathlib, sys
           p = pathlib.Path("kernel/sysctl.c")
@@ -58,344 +60,45 @@ jobs:
           print("swappiness = 200 修改成功。")
           PY
 
-      - name: Patch ZRAM Writeback functionality
-        run: |
-          python3 - <<'PY'
-          import re, pathlib, textwrap
-          h = pathlib.Path("drivers/block/zram/zram_drv.h")
-          c = pathlib.Path("drivers/block/zram/zram_drv.c")
-          hs, cs = h.read_text(), c.read_text()
-
-          # 1. 精确修复枚举宏，补充 ZRAM_IDLE
-          if "ZRAM_IDLE" not in hs:
-              if "__NR_ZRAM_PAGEFLAGS," in hs:
-                  hs = hs.replace("__NR_ZRAM_PAGEFLAGS,", "ZRAM_IDLE,\t/* idle page */\n\t__NR_ZRAM_PAGEFLAGS,")
-              elif "ZRAM_HUGE," in hs:
-                  hs = hs.replace("ZRAM_HUGE,", "ZRAM_HUGE,\n\tZRAM_IDLE,\t/* idle page */")
-              h.write_text(hs)
-
-          # 2. 修复 struct zram 里的 backing_dev 定义
-          if "struct file *backing_dev;" not in hs:
-              if "struct block_device *bdev;" in hs:
-                  hs = hs.replace("struct block_device *bdev;", "struct block_device *bdev;\n\tstruct file *backing_dev;")
-              else:
-                  hs = hs.replace("struct zram {", "struct zram {\n\tstruct file *backing_dev;")
-              h.write_text(hs)
-
-          # 3. 注入必要的宏定义
-          if "zram_test_flag" not in cs:
-              helpers = textwrap.dedent("""
-              #define zram_test_flag(zram, index, flag) \
-                  (zram->table[index].value & (1 << (flag)))
-              #define zram_set_flag(zram, index, flag) \
-                  (zram->table[index].value |= (1 << (flag)))
-              #define zram_clear_flag(zram, index, flag) \
-                  (zram->table[index].value &= ~(1 << (flag)))
-              """)
-              cs = cs.replace('#include "zram_drv.h"', '#include "zram_drv.h"\n' + helpers, 1)
-
-          # 4. 如果源码已有 backing_dev_show 注册，先精准删掉旧的，防止重定义报错
-          # 匹配整个函数体
-          cs = re.sub(r"static ssize_t backing_dev_show\([^)]*\)\s*\{.*?\n\}\n", "", cs, flags=re.S)
-          cs = re.sub(r"static ssize_t backing_dev_store\([^)]*\)\s*\{.*?\n\}\n", "", cs, flags=re.S)
-          cs = re.sub(r"static ssize_t writeback_store\([^)]*\)\s*\{.*?\n\}\n", "", cs, flags=re.S)
-          cs = cs.replace("static DEVICE_ATTR_RW(backing_dev);", "")
-          cs = cs.replace("static DEVICE_ATTR_WO(backing_dev);", "")
-          cs = cs.replace("static DEVICE_ATTR_RO(backing_dev);", "")
-          cs = cs.replace("&dev_attr_backing_dev.attr,", "")
-
-          # 5. 注入全新的 sysfs 属性 (idle, writeback, backing_dev) 并修复 4.4 内核 API
-          sysfs_code = textwrap.dedent("""
-          static ssize_t backing_dev_show(struct device *dev, struct device_attribute *attr, char *buf) {
-              struct zram *zram = dev_to_zram(dev);
-              return sprintf(buf, "%s\\n", zram->backing_dev ? "enabled" : "none");
-          }
-          static ssize_t backing_dev_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t len) {
-              struct zram *zram = dev_to_zram(dev);
-              struct file *file;
-              char *path = strim((char *)buf);
-              if (zram->backing_dev) return -EBUSY;
-              file = filp_open(path, O_RDWR | O_LARGEFILE | O_CREAT, 0644);
-              if (IS_ERR(file)) return PTR_ERR(file);
-              zram->backing_dev = file;
-              return len;
-          }
-          static ssize_t idle_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t len) {
-              struct zram *zram = dev_to_zram(dev);
-              unsigned long index;
-              if (!sysfs_streq(buf, "all")) return -EINVAL;
-              down_read(&zram->init_lock);
-              for (index = 0; index < zram->disksize >> PAGE_SHIFT; index++) {
-                  zram_slot_lock(zram, index);
-                  if (zram_get_element(zram, index))
-                      zram_set_flag(zram, index, ZRAM_IDLE);
-                  zram_slot_unlock(zram, index);
-              }
-              up_read(&zram->init_lock);
-              return len;
-          }
-          static ssize_t writeback_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t len) {
-              struct zram *zram = dev_to_zram(dev);
-              unsigned long index;
-              struct page *page;
-              loff_t pos;
-              int ret;
-              struct bio_vec bvec;
-              
-              if (!zram->backing_dev) return -ENODEV;
-              if (!sysfs_streq(buf, "idle") && !sysfs_streq(buf, "all")) return -EINVAL;
-              page = alloc_page(GFP_NOIO);
-              if (!page) return -ENOMEM;
-              
-              down_read(&zram->init_lock);
-              for (index = 0; index < zram->disksize >> PAGE_SHIFT; index++) {
-                  zram_slot_lock(zram, index);
-                  if (!zram_get_element(zram, index) || (!zram_test_flag(zram, index, ZRAM_IDLE) && !sysfs_streq(buf, "all"))) {
-                      zram_slot_unlock(zram, index);
-                      continue;
-                  }
-                  zram_slot_unlock(zram, index); // 释放锁，准备 I/O
-                  
-                  bvec.bv_page = page;
-                  bvec.bv_len = PAGE_SIZE;
-                  bvec.bv_offset = 0;
-                  ret = zram_bvec_read(zram, &bvec, index, 0, NULL);
-                  if (ret == 0) {
-                      pos = (loff_t)index * PAGE_SIZE;
-                      // 4.4 内核 kernel_write 原型：ssize_t kernel_write(struct file *, const char *, size_t, loff_t);
-                      ret = kernel_write(zram->backing_dev, page_address(page), PAGE_SIZE, pos);
-                      if (ret == PAGE_SIZE) {
-                          zram_slot_lock(zram, index);
-                          zram_clear_flag(zram, index, ZRAM_IDLE);
-                          zram_set_flag(zram, index, ZRAM_WB);
-                          zram_free_page(zram, index);
-                          zram_slot_unlock(zram, index);
-                      }
-                  }
-              }
-              up_read(&zram->init_lock);
-              __free_page(page);
-              return len;
-          }
-          static ssize_t idle_show(struct device *dev, struct device_attribute *attr, char *buf) { return sprintf(buf, "0\\n"); }
-          static DEVICE_ATTR_RW(backing_dev);
-          static DEVICE_ATTR_RW(idle);
-          static DEVICE_ATTR_WO(writeback);
-          """)
-          cs = cs.replace("static struct attribute *zram_disk_attrs[] = {", sysfs_code + "\nstatic struct attribute *zram_disk_attrs[] = {\n\t&dev_attr_backing_dev.attr,\n\t&dev_attr_idle.attr,\n\t&dev_attr_writeback.attr,")
-
-          # 6. 在 zram_bvec_read 中增加从 backing_dev 读回的逻辑
-          if "zram->backing_dev && zram_test_flag(zram, index, ZRAM_WB)" not in cs:
-              read_inject = textwrap.dedent("""
-                  if (unlikely(!zram_get_element(zram, index))) {
-                      if (zram->backing_dev && zram_test_flag(zram, index, ZRAM_WB)) {
-                          loff_t pos = (loff_t)index * PAGE_SIZE;
-                          // 4.4 内核 kernel_read 原型传值
-                          int ret = kernel_read(zram->backing_dev, page_address(bvec->bv_page), PAGE_SIZE, pos);
-                          return (ret == PAGE_SIZE) ? 0 : -EIO;
-                      }
-                      return 0;
-                  }
-              """)
-              cs = re.sub(r"if \(unlikely\(!zram_get_element\(zram, index\)\)\)\s*return 0;", read_inject, cs, count=1)
-
-          # 7. 在 __zram_bvec_write 中清除标志位
-          if "zram_clear_flag(zram, index, ZRAM_IDLE)" not in cs:
-              cs = re.sub(r"(static int __zram_bvec_write\(.*?\{.*?)zram_slot_lock\(zram, index\);",
-                          r"\1zram_slot_lock(zram, index);\n\tzram_clear_flag(zram, index, ZRAM_IDLE);\n\tzram_clear_flag(zram, index, ZRAM_WB);", cs, count=1, flags=re.S)
-
-          # 8. 在 slot_free_notify 中清除标志
-          if "zram_clear_flag(zram, index, ZRAM_IDLE)" not in cs.split("static void zram_slot_free_notify")[1]:
-              cs = re.sub(r"(static void zram_slot_free_notify\(.*?\{.*?zram_slot_lock\(.*?\);.*?)zram_free_page",
-                          r"\1zram_clear_flag(zram, index, ZRAM_IDLE);\n\tzram_clear_flag(zram, index, ZRAM_WB);\n\tzram_free_page", cs, count=1, flags=re.S)
-
-          # 9. 释放 backing_dev
-          if "filp_close(zram->backing_dev" not in cs:
-              cs = re.sub(r"(zram->disksize\s*=\s*0;)",
-                          r"\1\n\tif (zram->backing_dev) { filp_close(zram->backing_dev, NULL); zram->backing_dev = NULL; }", cs, count=1)
-
-          c.write_text(cs)
-          print("ZRAM Writeback 注入完成。")
-          PY
-
-      - name: Integrate Re:Kernel
-        run: |
-          python3 - <<'PY'
-          import re, pathlib, sys, textwrap
-          
-          header = textwrap.dedent("""\
-          #ifndef _LINUX_REKERNEL_H
-          #define _LINUX_REKERNEL_H
-          #include <linux/init.h>
-          #include <linux/types.h>
-          #include <net/sock.h>
-          #include <linux/netlink.h>
-          #include <linux/proc_fs.h>
-          #include <linux/freezer.h>
-          #define NETLINK_REKERNEL_MAX 26
-          #define NETLINK_REKERNEL_MIN 22
-          #define USER_PORT 100
-          #define PACKET_SIZE 128
-          #define MIN_USERAPP_UID (10000)
-          #define MAX_SYSTEM_UID (2000)
-          #define RESERVE_ORDER 17
-          #define WARN_AHEAD_SPACE (1 << RESERVE_ORDER)
-          static struct sock *rekernel_netlink = NULL;
-          extern struct net init_net;
-          static int netlink_unit = NETLINK_REKERNEL_MIN;
-          static inline bool line_is_frozen(struct task_struct *task) {
-              return frozen(task->group_leader) || freezing(task->group_leader);
-          }
-          static int send_netlink_message(char *msg, uint16_t len) {
-              struct sk_buff *skbuffer;
-              struct nlmsghdr *nlhdr;
-              skbuffer = nlmsg_new(len, GFP_ATOMIC);
-              if (!skbuffer) return -1;
-              nlhdr = nlmsg_put(skbuffer, 0, 0, netlink_unit, len, 0);
-              if (!nlhdr) { nlmsg_free(skbuffer); return -1; }
-              memcpy(nlmsg_data(nlhdr), msg, len);
-              return netlink_unicast(rekernel_netlink, skbuffer, USER_PORT, MSG_DONTWAIT);
-          }
-          static void netlink_rcv_msg(struct sk_buff *skbuffer) {}
-          static struct netlink_kernel_cfg rekernel_cfg = { .input = netlink_rcv_msg };
-          static int rekernel_unit_show(struct seq_file *m, void *v) { seq_printf(m, "%d\\n", netlink_unit); return 0; }
-          static int rekernel_unit_open(struct inode *inode, struct file *file) { return single_open(file, rekernel_unit_show, NULL); }
-          static const struct file_operations rekernel_unit_fops = {
-              .open = rekernel_unit_open, .read = seq_read, .llseek = seq_lseek, .release = single_release, .owner = THIS_MODULE,
-          };
-          static struct proc_dir_entry *rekernel_dir, *rekernel_unit_entry;
-          static int start_rekernel_server(void) {
-            if (rekernel_netlink != NULL) return 0;
-            for (netlink_unit = NETLINK_REKERNEL_MIN; netlink_unit < NETLINK_REKERNEL_MAX; netlink_unit++) {
-              rekernel_netlink = (struct sock *)netlink_kernel_create(&init_net, netlink_unit, &rekernel_cfg);
-              if (rekernel_netlink != NULL) break;
-            }
-            if (rekernel_netlink == NULL) return -1;
-            rekernel_dir = proc_mkdir("rekernel", NULL);
-            if (rekernel_dir) {
-                char buff[32]; sprintf(buff, "%d", netlink_unit);
-                rekernel_unit_entry = proc_create(buff, 0644, rekernel_dir, &rekernel_unit_fops);
-            }
-            return 0;
-          }
-          #endif
-          """)
-          pathlib.Path("include/linux/rekernel.h").write_text(header)
-
-          c_path = pathlib.Path("drivers/android/binder.c")
-          cs = c_path.read_text()
-          if "linux/rekernel.h" not in cs:
-              cs = cs.replace("#include <linux/sched.h>", "#include <linux/sched.h>\n#include <linux/rekernel.h>", 1)
-          
-          reply_inject = textwrap.dedent("""\
-              if (start_rekernel_server() == 0) {
-                  if (target_proc && target_proc->tsk && proc->tsk && (task_uid(target_proc->tsk).val <= MAX_SYSTEM_UID) && (proc->pid != target_proc->pid) && line_is_frozen(target_proc->tsk)) {
-                      char binder_kmsg[PACKET_SIZE];
-                      snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=reply,oneway=0,from_pid=%d,from=%d,target_pid=%d,target=%d;", proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
-                      send_netlink_message(binder_kmsg, strlen(binder_kmsg));
-                  }
-              }
-          """)
-          if "bindertype=reply" not in cs:
-              cs = re.sub(r"(target_proc = target_thread->proc;.*?binder_inner_proc_unlock\(target_thread->proc\);)", r"\1\n" + reply_inject, cs, count=1, flags=re.S)
-
-          trans_inject = textwrap.dedent("""\
-              if (start_rekernel_server() == 0) {
-                  if (target_proc && target_proc->tsk && proc->tsk && (task_uid(target_proc->tsk).val > MIN_USERAPP_UID) && (proc->pid != target_proc->pid) && line_is_frozen(target_proc->tsk)) {
-                      char binder_kmsg[PACKET_SIZE];
-                      snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=transaction,oneway=%d,from_pid=%d,from=%d,target_pid=%d,target=%d;", tr->flags & TF_ONE_WAY, proc->pid, task_uid(proc->tsk).val, target_proc->pid, task_uid(target_proc->tsk).val);
-                      send_netlink_message(binder_kmsg, strlen(binder_kmsg));
-                  }
-              }
-          """)
-          if "bindertype=transaction" not in cs:
-              cs = cs.replace("e->to_node = target_node->debug_id;", "e->to_node = target_node->debug_id;\n" + trans_inject)
-          c_path.write_text(cs)
-
-          alloc_path = pathlib.Path("drivers/android/binder_alloc.c")
-          als = alloc_path.read_text()
-          if "linux/rekernel.h" not in als:
-              als = als.replace("#include <linux/sched.h>", "#include <linux/sched.h>\n#include <linux/rekernel.h>", 1)
-          
-          alloc_inject = textwrap.dedent("""\
-              if (is_async && (alloc->free_async_space < 3 * (size + sizeof(struct binder_buffer)) || (alloc->free_async_space < WARN_AHEAD_SPACE))) {
-                  struct task_struct *proc_task = NULL;
-                  rcu_read_lock();
-                  proc_task = find_task_by_vpid(alloc->pid);
-                  rcu_read_unlock();
-                  if (proc_task != NULL && start_rekernel_server() == 0) {
-                      if (line_is_frozen(proc_task)) {
-                          char binder_kmsg[PACKET_SIZE];
-                          snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=free_buffer_full,oneway=1,from_pid=%d,from=%d,target_pid=%d,target=%d;", current->pid, task_uid(current).val, proc_task->pid, task_uid(proc_task).val);
-                          send_netlink_message(binder_kmsg, strlen(binder_kmsg));
-                      }
-                  }
-              }
-          """)
-          if "bindertype=free_buffer_full" not in als:
-              als = re.sub(r"(if \(is_async &&\s*alloc->free_async_space < size \+ sizeof\(struct binder_buffer\)\))", alloc_inject + r"\1", als, count=1)
-          alloc_path.write_text(als)
-
-          sig_path = pathlib.Path("kernel/signal.c")
-          sigs = sig_path.read_text()
-          if "linux/rekernel.h" not in sigs:
-              sigs = sigs.replace("#include <linux/sched.h>", "#include <linux/sched.h>\n#include <linux/rekernel.h>", 1)
-          
-          sig_inject = textwrap.dedent("""\
-              if (start_rekernel_server() == 0) {
-                  if (line_is_frozen(current) && (sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)) {
-                      char binder_kmsg[PACKET_SIZE];
-                      snprintf(binder_kmsg, sizeof(binder_kmsg), "type=Signal,signal=%d,killer_pid=%d,killer=%d,dst_pid=%d,dst=%d;", sig, task_tgid_nr(p), task_uid(p).val, task_tgid_nr(current), task_uid(current).val);
-                      send_netlink_message(binder_kmsg, strlen(binder_kmsg));
-                  }
-              }
-          """)
-          if "type=Signal" not in sigs:
-              sigs = re.sub(r"(int ret = -ESRCH;)", r"\1\n" + sig_inject, sigs, count=1)
-          sig_path.write_text(sigs)
-          print("Re:Kernel 注入完成。")
-          PY
-
-      - name: Configure kernel for APatch (GCC 10)
+      - name: Configure kernel for APatch / KPM (GCC 11)
         run: |
           make O=out ARCH=$ARCH \
                CROSS_COMPILE=aarch64-linux-gnu- \
                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                $DEFCONFIG
 
+          # 启用 APatch 及 KPM 模块运行所需的关键内核配置，保持作者原配置不变
           ./scripts/config --file out/.config \
             -e KALLSYMS -e KALLSYMS_ALL -e KPROBES -e KPROBE_EVENTS \
-            -e DEBUG_INFO -d MODULE_SIG -d MODULE_SIG_FORCE \
-            -e ZRAM -e ZRAM_DEF_COMP_LZ4 -e ZRAM_WRITEBACK \
-            -e ZSMALLOC -e ZSMALLOC_STAT -e CRYPTO_LZ4 -e LZ4_COMPRESS -e LZ4_DECOMPRESS \
-            -e SWAP -e BLK_DEV_LOOP
+            -d MODULE_SIG -d MODULE_SIG_FORCE
 
           make O=out ARCH=$ARCH olddefconfig
 
           echo "---- 关键配置校验 ----"
-          for c in KALLSYMS_ALL KPROBES ZRAM ZRAM_WRITEBACK; do
+          for c in KALLSYMS_ALL KPROBES; do
             if grep -q "^CONFIG_${c}=y" out/.config; then
               echo "OK   CONFIG_${c}=y"
             else
-              echo "::warning::CONFIG_${c} 未生效"
+              echo "::error::CONFIG_${c} 未生效"
+              exit 1
             fi
           done
 
-      - name: Build kernel (GCC 10)
+      - name: Build kernel (GCC 11)
         run: |
           make -j"$(nproc)" O=out ARCH=$ARCH \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             Image Image.gz dtbs
 
-      - name: Pack AnyKernel3
+      - name: Pack Recovery Flashable Zip (AnyKernel3)
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
           cp out/arch/arm64/boot/Image.gz anykernel/
           cp out/arch/arm64/boot/dtbs/*.dtb anykernel/ 2>/dev/null || true
           
           cd anykernel
-          sed -i 's/^kernel.string=.*/kernel.string=ReKernel-ZRAM-Writeback/' anykernel.sh
+          sed -i 's/^kernel.string=.*/kernel.string=blu_spark-Swappiness200-APatchReady/' anykernel.sh
           sed -i 's/^device.name1=.*/device.name1=cheeseburger/' anykernel.sh
           sed -i 's/^device.name2=.*/device.name2=dumpling/' anykernel.sh
           sed -i 's/^device.name3=.*/device.name3=/' anykernel.sh
@@ -406,11 +109,12 @@ jobs:
           sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=0/' anykernel.sh
           sed -i 's/^do.devicecheck=.*/do.devicecheck=0/' anykernel.sh
           
-          zip -r "../op5-kernel-rekernel-$(date +%Y%m%d-%H%M).zip" . -x '*.git*'
+          # 生成可直接在 Recovery 刷入的 zip 包
+          zip -r "../op5-flashable-kernel-$(date +%Y%m%d-%H%M).zip" . -x '*.git*'
 
-      - name: Upload artifact
+      - name: Upload Flashable Zip Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: op5-kernel-rekernel-zram
-          path: op5-kernel-*.zip
+          name: op5-recovery-flashable-zip
+          path: op5-flashable-kernel-*.zip
           if-no-files-found: error
