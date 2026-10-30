@@ -33,11 +33,10 @@ jobs:
             zlib1g-dev python3 cpio device-tree-compiler \
             gcc-10-aarch64-linux-gnu gcc-10-arm-linux-gnueabi
 
-          # 强制将系统默认的 gcc 切换为 GCC 10（GCC 11 移除了对 cortex-a73.cortex-a53 的支持）
+          # 强制将系统默认的 gcc 切换为 GCC 10
           sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-10 100
           sudo update-alternatives --install /usr/bin/arm-linux-gnueabi-gcc arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-10 100
           
-          # 打印版本验证
           echo "--- GCC Version ---"
           aarch64-linux-gnu-gcc --version
 
@@ -71,10 +70,12 @@ jobs:
           c = pathlib.Path("drivers/block/zram/zram_drv.c")
           hs, cs = h.read_text(), c.read_text()
 
-          if "struct block_device *bdev;" not in hs:
-              hs = re.sub(r"(struct gendisk \*disk;)", r"\1\n\tstruct block_device *bdev;\n\tunsigned long *idle;\n\tatomic64_t nr_idle_pages;", hs, count=1)
+          # 1. 修改 struct zram
+          if "unsigned long *idle;" not in hs:
+              hs = re.sub(r"(struct gendisk\s*\*disk;)", r"\1\n\tstruct block_device *bdev;\n\tunsigned long *idle;\n\tatomic64_t nr_idle_pages;", hs, count=1)
               h.write_text(hs)
 
+          # 2. 在文件靠前位置注入定义（确保所有函数都能提前看到）
           if "zram_mark_object_idle" not in cs:
               mark_func = textwrap.dedent("""
               enum idle_flag { IDLE_OLD, IDLE_NEW };
@@ -93,14 +94,21 @@ jobs:
                   }
               }
               """)
-              cs = cs.replace("static void zram_slot_free_notify", mark_func + "\nstatic void zram_slot_free_notify")
+              if "static inline struct zram *dev_to_zram" in cs:
+                  cs = cs.replace("static inline struct zram *dev_to_zram", mark_func + "\nstatic inline struct zram *dev_to_zram")
+              else:
+                  cs = cs.replace("#include <linux/vmalloc.h>", "#include <linux/vmalloc.h>\n" + mark_func)
 
+          # 3. 只在 zram_slot_free_notify 中精准注入 IDLE_OLD 标记
           if "zram_mark_object_idle(zram, index, IDLE_OLD)" not in cs:
-              cs = cs.replace("zram_free_page(zram, index);", "zram_free_page(zram, index);\n\tzram_mark_object_idle(zram, index, IDLE_OLD);")
+              cs = re.sub(r"(static void zram_slot_free_notify.*?\{.*?)zram_free_page\(zram, index\);",
+                          r"\1zram_free_page(zram, index);\n\tzram_mark_object_idle(zram, index, IDLE_OLD);", cs, count=1, flags=re.S)
 
+          # 4. 在 __zram_bvec_write 中注入 IDLE_NEW 标记
           if "zram_mark_object_idle(zram, index, IDLE_NEW)" not in cs:
-              cs = re.sub(r"(static int zram_bvec_write\(.*?\{)", r"\1\n\tzram_mark_object_idle(zram, index, IDLE_NEW);", cs, count=1, flags=re.S)
+              cs = re.sub(r"(static int __zram_bvec_write\(.*?\{)", r"\1\n\tzram_mark_object_idle(zram, index, IDLE_NEW);", cs, count=1, flags=re.S)
 
+          # 5. sysfs 接口
           if "dev_attr_backing_dev" not in cs:
               sysfs_code = textwrap.dedent("""
               static ssize_t backing_dev_show(struct device *dev, struct device_attribute *attr, char *buf) {
@@ -118,11 +126,18 @@ jobs:
               """)
               cs = cs.replace("static struct attribute *zram_disk_attrs[] = {", sysfs_code + "\nstatic struct attribute *zram_disk_attrs[] = {\n\t&dev_attr_backing_dev.attr,\n\t&dev_attr_writeback.attr,\n\t&dev_attr_idle.attr,")
 
+          # 6. 在 disksize_store 中初始化 idle 数组
           if "zram->idle = kzalloc" not in cs:
-              cs = re.sub(r"(static int zram_add\(void\))", r"\1\n{\n\tzram->idle = kzalloc(BITS_TO_LONGS(zram->disksize >> PAGE_SHIFT) * sizeof(long), GFP_KERNEL);\n\tatomic64_set(&zram->nr_idle_pages, 0);\n\treturn 0;\n}\nstatic int zram_add_orig(void)", cs, count=1)
+              cs = re.sub(r"(zram->disksize\s*=\s*disksize;)",
+                          r"\1\n\tzram->idle = kzalloc(BITS_TO_LONGS(disksize >> PAGE_SHIFT) * sizeof(long), GFP_KERNEL);\n\tatomic64_set(&zram->nr_idle_pages, 0);", cs, count=1)
+
+          # 7. 在 disksize=0 时释放 idle
+          if "kfree(zram->idle)" not in cs:
+              cs = re.sub(r"(zram->disksize\s*=\s*0;)",
+                          r"\1\n\tkfree(zram->idle);\n\tzram->idle = NULL;", cs, count=1)
 
           c.write_text(cs)
-          if "zram_mark_object_idle" not in c.read_text() or "dev_attr_backing_dev" not in c.read_text():
+          if "zram_mark_object_idle" not in c.read_text() or "zram->idle = kzalloc" not in c.read_text():
               print("::error::ZRAM 回写功能注入失败")
               sys.exit(1)
           print("zram writeback 注入成功。")
@@ -133,7 +148,7 @@ jobs:
           python3 - <<'PY'
           import re, pathlib, sys, textwrap
           
-          # 注意：这里移除了 linux/sched/jobctl.h，以兼容 Linux 4.4
+          # 注意：去掉了 linux/sched/jobctl.h，以兼容 4.4
           header = textwrap.dedent("""\
           #ifndef _LINUX_REKERNEL_H
           #define _LINUX_REKERNEL_H
@@ -262,7 +277,8 @@ jobs:
               }
           """)
           if "type=Signal" not in sigs:
-              sigs = re.sub(r"(int do_send_sig_info\(int sig, struct siginfo \*info, struct task_struct \*p,\s*bool group\)\s*\{)", r"\1\n" + sig_inject, sigs, count=1)
+              # 精准插入到 int ret = -ESRCH; 的后面，保证 C90 不报警
+              sigs = re.sub(r"(int do_send_sig_info\(int sig, struct siginfo \*info, struct task_struct \*p,\s*bool group\)\s*\{.*?int ret = -ESRCH;)", r"\1\n" + sig_inject, sigs, count=1, flags=re.S)
           sig_path.write_text(sigs)
           
           if "type=Signal" not in sig_path.read_text() or "bindertype=reply" not in c_path.read_text() or "bindertype=free_buffer_full" not in alloc_path.read_text():
@@ -310,7 +326,6 @@ jobs:
           cp out/arch/arm64/boot/dtbs/*.dtb anykernel/ 2>/dev/null || true
           
           cd anykernel
-          # 按照指南，关闭 devicecheck，防止不认识设备代号而报错
           sed -i 's/do.devicecheck=1/do.devicecheck=0/' anykernel.sh
           sed -i 's|block=.*|block=/dev/block/bootdevice/by-name/boot;|' anykernel.sh
           
