@@ -58,7 +58,7 @@ jobs:
           print("swappiness = 200 修改成功。")
           PY
 
-      - name: Patch ZRAM Writeback (rote66 ZRAM_IDLE logic)
+      - name: Patch ZRAM Writeback functionality
         run: |
           python3 - <<'PY'
           import re, pathlib, textwrap
@@ -66,17 +66,19 @@ jobs:
           c = pathlib.Path("drivers/block/zram/zram_drv.c")
           hs, cs = h.read_text(), c.read_text()
 
-          # 1. 修复枚举宏，防止重复定义
+          # 1. 精确修复枚举宏，补充 ZRAM_IDLE
           if "ZRAM_IDLE" not in hs:
-              # 如果没有 ZRAM_IDLE，必定也没有 ZRAM_WB（除非是残缺补丁），我们手动加上
-              hs = hs.replace("ZRAM_HUGE,", "ZRAM_HUGE,\n\tZRAM_IDLE,\n\tZRAM_WB,")
+              if "__NR_ZRAM_PAGEFLAGS," in hs:
+                  hs = hs.replace("__NR_ZRAM_PAGEFLAGS,", "ZRAM_IDLE,\t/* idle page */\n\t__NR_ZRAM_PAGEFLAGS,")
+              elif "ZRAM_HUGE," in hs:
+                  hs = hs.replace("ZRAM_HUGE,", "ZRAM_HUGE,\n\tZRAM_IDLE,\t/* idle page */")
               h.write_text(hs)
 
           # 2. 修复 struct zram 里的 backing_dev 定义
           if "struct file *backing_dev;" not in hs:
-              # 4.4 中我们使用 struct file 来写文件
-              hs = hs.replace("struct block_device *bdev;", "struct block_device *bdev;\n\tstruct file *backing_dev;")
-              if "struct file *backing_dev;" not in hs:
+              if "struct block_device *bdev;" in hs:
+                  hs = hs.replace("struct block_device *bdev;", "struct block_device *bdev;\n\tstruct file *backing_dev;")
+              else:
                   hs = hs.replace("struct zram {", "struct zram {\n\tstruct file *backing_dev;")
               h.write_text(hs)
 
@@ -92,17 +94,17 @@ jobs:
               """)
               cs = cs.replace('#include "zram_drv.h"', '#include "zram_drv.h"\n' + helpers, 1)
 
-          # 4. 如果源码已有 backing_dev_show 注册，先删掉旧的，防止重定义报错
-          if "dev_attr_backing_dev" in cs:
-              # 删除原有的 backing_dev 定义和注册
-              cs = re.sub(r"static ssize_t backing_dev_show.*?\n\}\n", "", cs, flags=re.S)
-              cs = re.sub(r"static ssize_t backing_dev_store.*?\n\}\n", "", cs, flags=re.S)
-              cs = re.sub(r"static DEVICE_ATTR_RW\(backing_dev\);", "", cs)
-              cs = re.sub(r"static DEVICE_ATTR_WO\(backing_dev\);", "", cs)
-              cs = re.sub(r"static DEVICE_ATTR_RO\(backing_dev\);", "", cs)
-              cs = cs.replace("&dev_attr_backing_dev.attr,", "")
+          # 4. 如果源码已有 backing_dev_show 注册，先精准删掉旧的，防止重定义报错
+          # 匹配整个函数体
+          cs = re.sub(r"static ssize_t backing_dev_show\([^)]*\)\s*\{.*?\n\}\n", "", cs, flags=re.S)
+          cs = re.sub(r"static ssize_t backing_dev_store\([^)]*\)\s*\{.*?\n\}\n", "", cs, flags=re.S)
+          cs = re.sub(r"static ssize_t writeback_store\([^)]*\)\s*\{.*?\n\}\n", "", cs, flags=re.S)
+          cs = cs.replace("static DEVICE_ATTR_RW(backing_dev);", "")
+          cs = cs.replace("static DEVICE_ATTR_WO(backing_dev);", "")
+          cs = cs.replace("static DEVICE_ATTR_RO(backing_dev);", "")
+          cs = cs.replace("&dev_attr_backing_dev.attr,", "")
 
-          # 5. 注入全新的 sysfs 属性 (idle, writeback, backing_dev) 并修复 C90 警告
+          # 5. 注入全新的 sysfs 属性 (idle, writeback, backing_dev) 并修复 4.4 内核 API
           sysfs_code = textwrap.dedent("""
           static ssize_t backing_dev_show(struct device *dev, struct device_attribute *attr, char *buf) {
               struct zram *zram = dev_to_zram(dev);
@@ -188,6 +190,7 @@ jobs:
                   if (unlikely(!zram_get_element(zram, index))) {
                       if (zram->backing_dev && zram_test_flag(zram, index, ZRAM_WB)) {
                           loff_t pos = (loff_t)index * PAGE_SIZE;
+                          // 4.4 内核 kernel_read 原型传值
                           int ret = kernel_read(zram->backing_dev, page_address(bvec->bv_page), PAGE_SIZE, pos);
                           return (ret == PAGE_SIZE) ? 0 : -EIO;
                       }
