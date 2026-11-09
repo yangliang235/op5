@@ -22,12 +22,18 @@ jobs:
 
     - name: Fetch Zstd 1.5.7 Kernel Port
       run: |
-        git clone --depth 1 --branch v1.5.7-kernel https://github.com/facebook/zstd.git zstd-src
+        # 修复1：去掉 --depth 1，避免 Git 无法正确解析 tag 的 commit 树
+        git clone --branch v1.5.7-kernel --single-branch https://github.com/facebook/zstd.git zstd-src
+        
         mv lib/zstd lib/zstd.bak || true
         mkdir -p lib/zstd
+        
+        # 复制库源码
         cp -r zstd-src/lib/* lib/zstd/
-        cp zstd-src/include/zstd.h include/linux/
-        cp zstd-src/include/zstd_errors.h include/linux/
+        
+        # 修复2：在 v1.5.7-kernel 分支中，头文件存放在 lib/ 目录下，而不是 include/
+        cp zstd-src/lib/zstd.h include/linux/
+        cp zstd-src/lib/zstd_errors.h include/linux/
 
     - name: Patch for Linux 4.4 & GCC 11 Compatibility
       run: |
@@ -81,8 +87,7 @@ jobs:
         ./scripts/config --file .config -m ZSTD_DECOMPRESS
         ./scripts/config --file .config -m ZSTD_COMMON
         
-        # 关键：为 GCC 11 屏蔽大量由于新语法检查导致的错误
-        # 这些警告在 Linux 4.4 老代码中非常常见
+        # 为 GCC 11 屏蔽大量由于新语法检查导致的错误
         export KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -Wno-use-after-free"
         export HOSTCFLAGS="$KCFLAGS"
         
