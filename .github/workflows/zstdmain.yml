@@ -1,53 +1,44 @@
-name: Build Zstd 1.5.7 Module (GCC 11 Native)
+name: Build Zstd 1.5.7 Module (GCC 11)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04 # Ubuntu 22.04 默认 GCC 11
-    
+    runs-on: ubuntu-22.04
+
     steps:
     - name: Checkout Kernel Source
       uses: actions/checkout@v4
       with:
         fetch-depth: 1
 
-    - name: Install Dependencies (GCC 11)
+    - name: Install Dependencies
       run: |
         sudo apt-get update
-        # 安装 gcc-11 版本的交叉编译器，并确保 host 工具链完整
-        sudo apt-get install -y bc bison flex libssl-dev build-essential \
-        gcc-11-aarch64-linux-gnu binutils-aarch64-linux-gnu libelf-dev device-tree-compiler
+        # 关键修复：同时安装 gcc-11 和 g++-11 的 aarch64 交叉编译器
+        sudo apt-get install -y \
+          bc bison flex libssl-dev build-essential \
+          gcc-11-aarch64-linux-gnu g++-11-aarch64-linux-gnu \
+          binutils-aarch64-linux-gnu \
+          libelf-dev device-tree-compiler
 
     - name: Fetch Zstd 1.5.7 Kernel Port
       run: |
-        # 修复1：去掉 --depth 1，避免 Git 无法正确解析 tag 的 commit 树
         git clone --branch v1.5.7-kernel --single-branch https://github.com/facebook/zstd.git zstd-src
-        
         mv lib/zstd lib/zstd.bak || true
         mkdir -p lib/zstd
-        
-        # 复制库源码
         cp -r zstd-src/lib/* lib/zstd/
-        
-        # 修复2：在 v1.5.7-kernel 分支中，头文件存放在 lib/ 目录下，而不是 include/
         cp zstd-src/lib/zstd.h include/linux/
         cp zstd-src/lib/zstd_errors.h include/linux/
 
     - name: Patch for Linux 4.4 & GCC 11 Compatibility
       run: |
-        # 1. 修复 4.4 内核缺 stddef.h 的问题
         sed -i 's|#include <linux/stddef.h>|#include <stddef.h>|' lib/zstd/zstd_deps.h || true
-        
-        # 2. 补齐 fallthrough 宏定义
         if ! grep -q "define fallthrough" lib/zstd/zstd_deps.h; then
-          echo "#ifndef fallthrough" >> lib/zstd/zstd_deps.h
-          echo "#define fallthrough __attribute__((__fallthrough__))" >> lib/zstd/zstd_deps.h
-          echo "#endif" >> lib/zstd/zstd_deps.h
+          printf '#ifndef fallthrough\n#define fallthrough __attribute__((__fallthrough__))\n#endif\n' >> lib/zstd/zstd_deps.h
         fi
 
-        # 3. 生成独立的 common 模块，防止符号重复定义 (duplicate symbols)
         cat > lib/zstd/zstd_common_module.c << 'EOF'
         #include "common/zstd_deps.h"
         #include "common/zstd_common.c"
@@ -74,41 +65,44 @@ jobs:
                              fse_decompress.o huf_decompress.o zstd_ddict.o zstd_decompress.o
         EOF
 
-    - name: Configure Kernel
+    - name: Clean Source Tree (Mandatory Before Out-of-Tree Build)
+      run: |
+        # 关键修复：必须在源码根目录执行 mrproper，不能带 O= 参数
+        make mrproper
+
+    - name: Configure Kernel (Out-of-Tree Build)
       run: |
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CC=aarch64-linux-gnu-gcc-11
         export HOSTCC=gcc-11
-        
-        make ARCH=arm64 blu_spark_defconfig
-        
-        # 开启模块编译选项
-        ./scripts/config --file .config -m ZSTD_COMPRESS
-        ./scripts/config --file .config -m ZSTD_DECOMPRESS
-        ./scripts/config --file .config -m ZSTD_COMMON
-        
-        # 为 GCC 11 屏蔽大量由于新语法检查导致的错误
+
+        # 现在可以安全地使用 out 目录
+        mkdir -p out
+        make O=out ARCH=arm64 blu_spark_defconfig
+
+        ./scripts/config --file out/.config -m ZSTD_COMPRESS
+        ./scripts/config --file out/.config -m ZSTD_DECOMPRESS
+        ./scripts/config --file out/.config -m ZSTD_COMMON
+
         export KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -Wno-use-after-free"
         export HOSTCFLAGS="$KCFLAGS"
-        
-        make ARCH=arm64 olddefconfig
-        # 4.4 内核准备模块编译环境
-        make ARCH=arm64 modules_prepare
+
+        make O=out ARCH=arm64 olddefconfig
+        make O=out ARCH=arm64 modules_prepare
 
     - name: Compile Zstd Module
       run: |
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CC=aarch64-linux-gnu-gcc-11
         export HOSTCC=gcc-11
-        
-        # 编译独立模块
-        make ARCH=arm64 \
+
+        make O=out ARCH=arm64 \
              KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -fcommon" \
-             M=lib/zstd modules
+             M=../lib/zstd modules
 
     - name: Upload zstd.ko Artifact
       uses: actions/upload-artifact@v4
       with:
         name: zstd-ko-modules-gcc11
-        path: lib/zstd/*.ko
+        path: out/lib/zstd/*.ko
         if-no-files-found: error
