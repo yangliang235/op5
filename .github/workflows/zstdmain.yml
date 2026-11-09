@@ -1,0 +1,80 @@
+name: Build Zstd 1.5.7 Module
+
+on:
+  workflow_dispatch: # 允许你在 Actions 页面手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04 # 老内核建议用 20.04 编译，兼容性更好
+    
+    steps:
+    - name: Checkout Kernel Source
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison flex libssl-dev build-essential \
+        gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+    - name: Fetch Zstd 1.5.7 Kernel Port
+      run: |
+        # 下载针对内核适配的 zstd 1.5.7
+        git clone --depth 1 --branch v1.5.7-kernel https://github.com/facebook/zstd.git zstd-src
+        
+        # 备份并替换原 lib/zstd
+        mv lib/zstd lib/zstd.bak || true
+        mkdir -p lib/zstd
+        cp -r zstd-src/lib/* lib/zstd/
+        
+        # 更新头文件
+        cp zstd-src/include/zstd.h include/linux/
+        cp zstd-src/include/zstd_errors.h include/linux/
+
+    - name: Patch Makefile for Module Compilation
+      run: |
+        # 强制重写 lib/zstd/Makefile，使其能在 4.4 内核下作为独立模块编译，并加上 -fcommon 避免符号冲突
+        cat > lib/zstd/Makefile << 'EOF'
+        ccflags-y += -I$(srctree)/lib/zstd -fcommon
+
+        obj-$(CONFIG_ZSTD_COMPRESS) += zstd_compress.o
+        obj-$(CONFIG_ZSTD_DECOMPRESS) += zstd_decompress.o
+
+        zstd_compress-y := zstd_compress_module.o zstd_common.o entropy_common.o fse_compress.o \
+                           hist.o huf_compress.o zstd_compress.o zstd_double_fast.o \
+                           zstd_fast.o zstd_lazy.o zstd_ldm.o zstd_opt.o
+                           
+        zstd_decompress-y := zstd_decompress_module.o zstd_common.o entropy_common.o \
+                             fse_decompress.o huf_decompress.o zstd_ddict.o zstd_decompress.o
+        EOF
+
+    - name: Configure Kernel
+      run: |
+        # 使用你提供的 defconfig
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- blu_spark_defconfig
+        
+        # 启用 zstd 模块编译 (m)
+        ./scripts/config --file .config -m ZSTD_COMPRESS
+        ./scripts/config --file .config -m ZSTD_DECOMPRESS
+        
+        # 准备编译环境
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- prepare
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- scripts
+
+    - name: Compile Zstd Module
+      run: |
+        # 忽略警告，强制编译模块
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+             KCFLAGS="-Wno-error -fcommon" \
+             M=lib/zstd modules
+
+    - name: Upload zstd.ko Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: zstd-ko-modules
+        # 4.4 内核通常会将压缩和解压分成两个 ko，这里都打包上传
+        path: lib/zstd/*.ko
+        if-no-files-found: error
