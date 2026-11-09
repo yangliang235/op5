@@ -33,14 +33,41 @@ jobs:
         cp zstd-src/include/zstd.h include/linux/
         cp zstd-src/include/zstd_errors.h include/linux/
 
+    - name: Patch for Linux 4.4 Compatibility
+      run: |
+        # 1. 修复 4.4 内核中 size_t 未定义的问题
+        sed -i 's|#include <linux/stddef.h>|#include <stddef.h>|' lib/zstd/zstd_deps.h || true
+        
+        # 2. 添加 fallthrough 属性定义，4.4 内核不支持
+        if ! grep -q "define fallthrough" lib/zstd/zstd_deps.h; then
+          echo "#ifndef fallthrough" >> lib/zstd/zstd_deps.h
+          echo "#define fallthrough __attribute__((__fallthrough__))" >> lib/zstd/zstd_deps.h
+          echo "#endif" >> lib/zstd/zstd_deps.h
+        fi
+
+        # 3. 关键修复：创建独立的 zstd_common 模块，解决符号重复定义问题
+        cat > lib/zstd/zstd_common_module.c << 'EOF'
+        #include "common/zstd_deps.h"
+        #include "common/zstd_common.c"
+        #include "common/error_private.c"
+        #include "common/entropy_common.c"
+        #include "common/fse_decompress.c"
+        #include "common/debug.c"
+        EXPORT_SYMBOL_GPL(ZSTD_customCalloc);
+        EXPORT_SYMBOL_GPL(ZSTD_customFree);
+        EOF
+
     - name: Patch Makefile for Module Compilation
       run: |
-        # 强制重写 lib/zstd/Makefile，使其能在 4.4 内核下作为独立模块编译，并加上 -fcommon 避免符号冲突
+        # 重写 Makefile，将 common 部分独立成 zstd_common.o，避免编译冲突
         cat > lib/zstd/Makefile << 'EOF'
         ccflags-y += -I$(srctree)/lib/zstd -fcommon
 
         obj-$(CONFIG_ZSTD_COMPRESS) += zstd_compress.o
         obj-$(CONFIG_ZSTD_DECOMPRESS) += zstd_decompress.o
+        obj-$(CONFIG_ZSTD_COMMON) += zstd_common.o
+
+        zstd_common-y := zstd_common_module.o
 
         zstd_compress-y := zstd_compress_module.o zstd_common.o entropy_common.o fse_compress.o \
                            hist.o huf_compress.o zstd_compress.o zstd_double_fast.o \
@@ -58,6 +85,7 @@ jobs:
         # 启用 zstd 模块编译 (m)
         ./scripts/config --file .config -m ZSTD_COMPRESS
         ./scripts/config --file .config -m ZSTD_DECOMPRESS
+        ./scripts/config --file .config -m ZSTD_COMMON
         
         # 准备编译环境
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
@@ -75,6 +103,6 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: zstd-ko-modules
-        # 4.4 内核通常会将压缩和解压分成两个 ko，这里都打包上传
+        # 现在会生成 zstd_common.ko, zstd_compress.ko, zstd_decompress.ko
         path: lib/zstd/*.ko
         if-no-files-found: error
