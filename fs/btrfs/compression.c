@@ -784,35 +784,36 @@ static struct list_head *find_workspace(int type)
 	atomic_t *alloc_ws		= &btrfs_comp_ws[idx].alloc_ws;
 	wait_queue_head_t *ws_wait	= &btrfs_comp_ws[idx].ws_wait;
 	int *num_ws			= &btrfs_comp_ws[idx].num_ws;
-again:
-	spin_lock(ws_lock);
-	if (!list_empty(idle_ws)) {
-		workspace = idle_ws->next;
-		list_del(workspace);
-		(*num_ws)--;
+
+	/*
+	 * 修复核心：使用 while(1) 结合 wait_event 机制，彻底防止唤醒丢失 (Lost Wakeup)。
+	 * 原代码在判断 alloc_ws > cpus 且进入 prepare_to_wait 之间，存在竞态条件，
+	 * 当并发较高或内存分配失败时，会导致任务永久睡死。
+	 */
+	while (1) {
+		spin_lock(ws_lock);
+		if (!list_empty(idle_ws)) {
+			workspace = idle_ws->next;
+			list_del(workspace);
+			(*num_ws)--;
+			spin_unlock(ws_lock);
+			return workspace;
+		}
+		if (atomic_read(alloc_ws) <= cpus) {
+			atomic_inc(alloc_ws);
+			spin_unlock(ws_lock);
+			workspace = btrfs_compress_op[idx]->alloc_workspace();
+			if (IS_ERR(workspace)) {
+				atomic_dec(alloc_ws);
+				wake_up(ws_wait);
+			}
+			return workspace;
+		}
 		spin_unlock(ws_lock);
-		return workspace;
-
+		
+		/* 安全的等待条件：只要有空闲的 ws，或者总的分配数降下来了，就醒来 */
+		wait_event(*ws_wait, (!list_empty(idle_ws) || atomic_read(alloc_ws) <= cpus));
 	}
-	if (atomic_read(alloc_ws) > cpus) {
-		DEFINE_WAIT(wait);
-
-		spin_unlock(ws_lock);
-		prepare_to_wait(ws_wait, &wait, TASK_UNINTERRUPTIBLE);
-		if (atomic_read(alloc_ws) > cpus && !*num_ws)
-			schedule();
-		finish_wait(ws_wait, &wait);
-		goto again;
-	}
-	atomic_inc(alloc_ws);
-	spin_unlock(ws_lock);
-
-	workspace = btrfs_compress_op[idx]->alloc_workspace();
-	if (IS_ERR(workspace)) {
-		atomic_dec(alloc_ws);
-		wake_up(ws_wait);
-	}
-	return workspace;
 }
 
 /*
@@ -833,19 +834,18 @@ static void free_workspace(int type, struct list_head *workspace)
 		list_add(workspace, idle_ws);
 		(*num_ws)++;
 		spin_unlock(ws_lock);
-		goto wake;
+	} else {
+		spin_unlock(ws_lock);
+		btrfs_compress_op[idx]->free_workspace(workspace);
+		atomic_dec(alloc_ws);
 	}
-	spin_unlock(ws_lock);
 
-	btrfs_compress_op[idx]->free_workspace(workspace);
-	atomic_dec(alloc_ws);
-wake:
 	/*
-	 * Make sure counter is updated before we wake up waiters.
+	 * 修复核心：只要释放了资源，无条件唤醒等待队列。
+	 * 唤醒的线程会被上面的 wait_event 条件重新评估，要么拿走 idle_ws 中的资源，
+	 * 要么因为 alloc_ws 降低而重新尝试分配。
 	 */
-	smp_mb();
-	if (waitqueue_active(ws_wait))
-		wake_up(ws_wait);
+	wake_up(ws_wait);
 }
 
 /*
