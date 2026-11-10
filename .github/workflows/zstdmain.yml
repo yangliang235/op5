@@ -199,7 +199,8 @@ jobs:
 
         make O=out blu_spark_defconfig
 
-        export KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -Wno-use-after-free -Wno-frame-larger-than="
+        # 修复：-Wno-frame-larger-than 后面不需要等号
+        export KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -Wno-use-after-free -Wno-frame-larger-than"
         export HOSTCFLAGS="$KCFLAGS"
 
         make O=out olddefconfig
@@ -212,8 +213,9 @@ jobs:
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
 
+        # 同样修复这里的 KCFLAGS
         make O=out \
-             KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -fcommon -Wno-frame-larger-than=" \
+             KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -fcommon -Wno-frame-larger-than" \
              M=$GITHUB_WORKSPACE/lib/zstd modules
 
         echo "=== Searching for .ko files ==="
