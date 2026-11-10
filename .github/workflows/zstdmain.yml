@@ -62,25 +62,29 @@ jobs:
 
     - name: Patch for Linux 4.4 & GCC 11 Compatibility
       run: |
-        # 核心修复：遍历整个 lib/zstd 目录，把标准 C 头文件强制替换为内核头文件
-        find lib/zstd -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <limits.h>|#include <linux/limits.h>|g' {} +
-        find lib/zstd -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <string.h>|#include <linux/string.h>|g' {} +
-        find lib/zstd -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <stddef.h>|#include <linux/stddef.h>|g' {} +
-        find lib/zstd -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <stdint.h>|#include <linux/types.h>|g' {} +
-        find lib/zstd -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|#include <stdlib.h>|#include <linux/slab.h>|g' {} +
+        # 1. 强力清洗所有标准库头文件包含，哪怕是带空格的写法
+        find lib/zstd -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i -E 's|#\s*include\s*<(limits|stddef|stdint|string|stdlib)\.h>|/* removed */|g' {} +
 
-        # 彻底重写 zstd_deps.h，补全内存操作宏
+        # 2. 彻底重写 zstd_deps.h，手动提供类型定义，不依赖任何标准库
         cat > lib/zstd/common/zstd_deps.h << 'EOF'
         #ifndef ZSTD_DEPS_COMMON
         #define ZSTD_DEPS_COMMON
 
         #include <linux/kernel.h>
-        #include <linux/limits.h>
         #include <linux/types.h>
         #include <linux/stddef.h>
         #include <linux/string.h>
         #include <linux/errno.h>
         #include <linux/vmalloc.h>
+        #include <linux/slab.h>
+
+        /* 针对老内核强补基本类型 */
+        #if defined(__SIZE_TYPE__)
+        typedef __SIZE_TYPE__ size_t;
+        #endif
+        #if defined(__PTRDIFF_TYPE__)
+        typedef __PTRDIFF_TYPE__ ptrdiff_t;
+        #endif
 
         #ifndef fallthrough
         #define fallthrough __attribute__((__fallthrough__))
@@ -102,7 +106,6 @@ jobs:
         #define ZSTD_memcmp(s1,s2,n)   memcmp((s1),(s2),(n))
         EOF
 
-        # 移除公共代码的 EXPORT_SYMBOL，避免重复定义
         sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customCalloc);/d' lib/zstd/common/zstd_common.c
         sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customFree);/d' lib/zstd/common/zstd_common.c
 
@@ -110,7 +113,9 @@ jobs:
       run: |
         rm -f lib/zstd/Makefile
         cat > lib/zstd/Makefile << 'EOF'
+        # 关键修复：使用 -include 强制预包含 zstd_deps.h，确保 size_t 等类型提前定义
         ccflags-y += -I$(srctree)/lib/zstd -I$(srctree)/lib/zstd/common -I$(srctree)/lib/zstd/compress -I$(srctree)/lib/zstd/decompress -fcommon
+        ccflags-y += -include $(srctree)/lib/zstd/common/zstd_deps.h
 
         obj-m += zstd_compress.o
         zstd_compress-y := zstd_compress_module.o \
