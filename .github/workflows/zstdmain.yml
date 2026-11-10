@@ -32,9 +32,31 @@ jobs:
     - name: Fetch Zstd 1.5.7 Kernel Port
       run: |
         git clone --branch v1.5.7-kernel --single-branch https://github.com/facebook/zstd.git zstd-src
+        
+        # 备份原内核的 zstd 目录
         mv lib/zstd lib/zstd.bak || true
         mkdir -p lib/zstd
+        
+        # 1. 复制新的 zstd 算法源码
         cp -r zstd-src/lib/* lib/zstd/
+        
+        # 2. 核心修复：把原内核的 module 包装文件恢复回来，否则编译不出 .ko
+        cp lib/zstd.bak/zstd_compress_module.c lib/zstd/ || true
+        cp lib/zstd.bak/zstd_decompress_module.c lib/zstd/ || true
+        cp lib/zstd.bak/zstd_compress_module.h lib/zstd/ || true
+        cp lib/zstd.bak/zstd_decompress_module.h lib/zstd/ || true
+        
+        # 如果原内核连这俩文件都没有（极其罕见），我们写一个空壳保底
+        if [ ! -f lib/zstd/zstd_compress_module.c ]; then
+            echo '#include <linux/module.h>' > lib/zstd/zstd_compress_module.c
+            echo 'MODULE_LICENSE("GPL");' >> lib/zstd/zstd_compress_module.c
+        fi
+        if [ ! -f lib/zstd/zstd_decompress_module.c ]; then
+            echo '#include <linux/module.h>' > lib/zstd/zstd_decompress_module.c
+            echo 'MODULE_LICENSE("GPL");' >> lib/zstd/zstd_decompress_module.c
+        fi
+        
+        # 更新全局头文件
         cp zstd-src/lib/zstd.h include/linux/
         cp zstd-src/lib/zstd_errors.h include/linux/
 
@@ -44,11 +66,10 @@ jobs:
         if ! grep -q "define fallthrough" lib/zstd/common/zstd_deps.h; then
           printf '#ifndef fallthrough\n#define fallthrough __attribute__((__fallthrough__))\n#endif\n' >> lib/zstd/common/zstd_deps.h
         fi
-        # 删除公共代码里的 EXPORT_SYMBOL，避免模块加载符号冲突
         sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customCalloc);/d' lib/zstd/common/zstd_common.c
         sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customFree);/d' lib/zstd/common/zstd_common.c
 
-    - name: Patch Makefile (Native Directory Structure)
+    - name: Patch Makefile
       run: |
         rm -f lib/zstd/Makefile
         cat > lib/zstd/Makefile << 'EOF'
@@ -105,15 +126,10 @@ jobs:
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
 
-        echo "=== Verifying Source Files ==="
-        # 打印出实际存在的文件，确认 zstd_compress_module.c 是否真的在里面
-        ls -la lib/zstd/
-        ls -la lib/zstd/compress/
+        echo "=== Verifying Entry Files Exist ==="
+        ls -la lib/zstd/zstd_compress_module.c
+        ls -la lib/zstd/zstd_decompress_module.c
 
-        echo "=== Verifying Makefile ==="
-        head -n 5 lib/zstd/Makefile
-
-        # 执行编译
         make O=out \
              KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -fcommon" \
              M=$GITHUB_WORKSPACE/lib/zstd modules
