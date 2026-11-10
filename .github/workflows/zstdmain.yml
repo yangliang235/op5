@@ -36,18 +36,33 @@ jobs:
         mkdir -p lib/zstd
         cp -r zstd-src/lib/* lib/zstd/
         
-        # 恢复内核自身的模块包装文件
-        cp lib/zstd.bak/zstd_compress_module.c lib/zstd/ || true
-        cp lib/zstd.bak/zstd_decompress_module.c lib/zstd/ || true
-        cp lib/zstd.bak/zstd_compress_module.h lib/zstd/ || true
-        cp lib/zstd.bak/zstd_decompress_module.h lib/zstd/ || true
+        # 我们直接自己写内核封装文件，不依赖原目录
+        cat > lib/zstd/zstd_compress_module.c << 'EOF'
+        #include <linux/kernel.h>
+        #include <linux/module.h>
+        int zstd_compress_init(void) { return 0; }
+        void zstd_compress_exit(void) { }
+        module_init(zstd_compress_init);
+        module_exit(zstd_compress_exit);
+        MODULE_LICENSE("GPL");
+        EOF
+
+        cat > lib/zstd/zstd_decompress_module.c << 'EOF'
+        #include <linux/kernel.h>
+        #include <linux/module.h>
+        int zstd_decompress_init(void) { return 0; }
+        void zstd_decompress_exit(void) { }
+        module_init(zstd_decompress_init);
+        module_exit(zstd_decompress_exit);
+        MODULE_LICENSE("GPL");
+        EOF
         
         cp zstd-src/lib/zstd.h include/linux/
         cp zstd-src/lib/zstd_errors.h include/linux/
 
     - name: Patch for Linux 4.4 & GCC 11 Compatibility
       run: |
-        # 1. 重写 zstd_deps.h：移除标准 C 库依赖，替换为内核头文件
+        # 1. 彻底重写 zstd_deps.h，补全内存操作宏，防止报错
         cat > lib/zstd/common/zstd_deps.h << 'EOF'
         #ifndef ZSTD_DEPS_COMMON
         #define ZSTD_DEPS_COMMON
@@ -58,15 +73,29 @@ jobs:
         #include <linux/stddef.h>
         #include <linux/string.h>
         #include <linux/errno.h>
+        #include <linux/vmalloc.h>
 
         #ifndef fallthrough
         #define fallthrough __attribute__((__fallthrough__))
         #endif
 
         #endif /* ZSTD_DEPS_COMMON */
+
+        #ifndef ZSTD_DEPS_NEED_MALLOC
+        #ifndef ZSTD_malloc
+        #define ZSTD_malloc(x)         vmalloc(x)
+        #define ZSTD_calloc(x,y)       vzalloc((x) * (y))
+        #define ZSTD_free(x)           vfree(x)
+        #endif
+        #endif
+
+        #define ZSTD_memcpy(d,s,n)     memcpy((d),(s),(n))
+        #define ZSTD_memmove(d,s,n)    memmove((d),(s),(n))
+        #define ZSTD_memset(d,s,n)     memset((d),(s),(n))
+        #define ZSTD_memcmp(s1,s2,n)   memcmp((s1),(s2),(n))
         EOF
 
-        # 2. 移除公共代码的 EXPORT_SYMBOL，避免模块加载符号冲突
+        # 2. 移除公共代码的 EXPORT_SYMBOL，避免重复定义
         sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customCalloc);/d' lib/zstd/common/zstd_common.c
         sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customFree);/d' lib/zstd/common/zstd_common.c
 
