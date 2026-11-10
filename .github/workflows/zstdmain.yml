@@ -44,46 +44,41 @@ jobs:
         if ! grep -q "define fallthrough" lib/zstd/common/zstd_deps.h; then
           printf '#ifndef fallthrough\n#define fallthrough __attribute__((__fallthrough__))\n#endif\n' >> lib/zstd/common/zstd_deps.h
         fi
-        # 删除 EXPORT_SYMBOL 避免冲突
         sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customCalloc);/d' lib/zstd/common/zstd_common.c
         sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customFree);/d' lib/zstd/common/zstd_common.c
 
-    - name: Patch Makefile (Force Overwrite)
+    - name: Flatten Source Files (Critical Fix)
       run: |
-        # 彻底删除旧的 Makefile
-        rm -f lib/zstd/Makefile
+        # 关键修复：将所有子目录中的源文件复制到 lib/zstd 根目录，避免 Kbuild 路径问题
+        cp lib/zstd/compress/*.c lib/zstd/
+        cp lib/zstd/decompress/*.c lib/zstd/
+        cp lib/zstd/common/*.c lib/zstd/
         
-        # 写入全新的 Makefile
+        # 复制头文件（如果编译时需要）
+        cp lib/zstd/compress/*.h lib/zstd/
+        cp lib/zstd/decompress/*.h lib/zstd/
+        cp lib/zstd/common/*.h lib/zstd/
+        
+        # 删除可能引起冲突的旧 Makefile
+        rm -f lib/zstd/Makefile
+
+    - name: Patch Makefile (Use Flat Filenames)
+      run: |
+        # 现在所有源文件都在同一目录下，Makefile 非常简单
         cat > lib/zstd/Makefile << 'EOF'
         ccflags-y += -I$(srctree)/lib/zstd -fcommon
 
         obj-m += zstd_compress.o
-        zstd_compress-y := zstd_compress_module.o \
-                           common/zstd_common.o \
-                           common/entropy_common.o \
-                           common/error_private.o \
-                           common/fse_decompress.o \
-                           common/debug.o \
-                           compress/fse_compress.o \
-                           compress/hist.o \
-                           compress/huf_compress.o \
-                           compress/zstd_compress.o \
-                           compress/zstd_double_fast.o \
-                           compress/zstd_fast.o \
-                           compress/zstd_lazy.o \
-                           compress/zstd_ldm.o \
-                           compress/zstd_opt.o
+        zstd_compress-y := zstd_compress_module.o zstd_common.o entropy_common.o \
+                           error_private.o fse_decompress.o debug.o \
+                           fse_compress.o hist.o huf_compress.o zstd_compress.o \
+                           zstd_double_fast.o zstd_fast.o zstd_lazy.o zstd_ldm.o \
+                           zstd_opt.o
 
         obj-m += zstd_decompress.o
-        zstd_decompress-y := zstd_decompress_module.o \
-                             common/zstd_common.o \
-                             common/entropy_common.o \
-                             common/error_private.o \
-                             common/fse_decompress.o \
-                             common/debug.o \
-                             decompress/huf_decompress.o \
-                             decompress/zstd_ddict.o \
-                             decompress/zstd_decompress.o
+        zstd_decompress-y := zstd_decompress_module.o zstd_common.o entropy_common.o \
+                             error_private.o fse_decompress.o debug.o \
+                             huf_decompress.o zstd_ddict.o zstd_decompress.o
         EOF
 
     - name: Configure Kernel
@@ -107,10 +102,6 @@ jobs:
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
-
-        echo "=== Verifying Makefile content ==="
-        # 打印出 Makefile 前几行，确认没有 compress/ 前缀
-        head -n 5 lib/zstd/Makefile
 
         # 编译
         make O=out \
