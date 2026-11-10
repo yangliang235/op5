@@ -23,10 +23,6 @@ jobs:
           binutils-aarch64-linux-gnu \
           libelf-dev device-tree-compiler
 
-    - name: Verify Cross Compiler Availability
-      run: |
-        aarch64-linux-gnu-gcc --version
-
     - name: Fetch Zstd 1.5.7 Kernel Port
       run: |
         git clone --branch v1.5.7-kernel --single-branch https://github.com/facebook/zstd.git zstd-src
@@ -69,18 +65,23 @@ jobs:
                              fse_decompress.o huf_decompress.o zstd_ddict.o zstd_decompress.o
         EOF
 
-    - name: Clean Source Tree
+    - name: Force Clean Source Tree
       run: |
-        # 原地编译前必须清理源码树
+        # 强制删除可能残留的 out 目录，并彻底清理源码树
+        rm -rf out
         make mrproper
 
-    - name: Configure Kernel (In-Tree Build)
+    - name: Configure Kernel
       run: |
+        # 强制清空可能干扰的内核输出路径变量，并设定编译环境
+        unset KBUILD_OUTPUT
+        export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
 
-        make ARCH=arm64 blu_spark_defconfig
+        # 原地进行 defconfig 配置
+        make blu_spark_defconfig
 
         # 开启模块编译选项
         ./scripts/config --file .config -m ZSTD_COMPRESS
@@ -91,17 +92,19 @@ jobs:
         export KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -Wno-use-after-free"
         export HOSTCFLAGS="$KCFLAGS"
 
-        make ARCH=arm64 olddefconfig
-        make ARCH=arm64 modules_prepare
+        make olddefconfig
+        make modules_prepare
 
     - name: Compile Zstd Module
       run: |
+        unset KBUILD_OUTPUT
+        export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
 
-        # 原地编译独立模块，M 指定相对根目录的路径
-        make ARCH=arm64 \
+        # 编译独立模块
+        make \
              KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -fcommon" \
              M=lib/zstd modules
 
@@ -109,6 +112,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: zstd-ko-modules-gcc11
-        # 产物路径改为源码目录下的位置
         path: lib/zstd/*.ko
         if-no-files-found: error
