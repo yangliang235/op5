@@ -16,7 +16,6 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        # 关键修复：安装 gcc-aarch64-linux-gnu 元包，确保生成 aarch64-linux-gnu-gcc
         sudo apt-get install -y \
           bc bison flex libssl-dev build-essential \
           gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
@@ -26,9 +25,7 @@ jobs:
 
     - name: Verify Cross Compiler Availability
       run: |
-        # 确认不带版本后缀的交叉编译器存在且可用
         aarch64-linux-gnu-gcc --version
-        aarch64-linux-gnu-gcc-11 --version
 
     - name: Fetch Zstd 1.5.7 Kernel Port
       run: |
@@ -74,27 +71,28 @@ jobs:
 
     - name: Clean Source Tree
       run: |
+        # 原地编译前必须清理源码树
         make mrproper
 
-    - name: Configure Kernel (Out-of-Tree Build)
+    - name: Configure Kernel (In-Tree Build)
       run: |
         export CROSS_COMPILE=aarch64-linux-gnu-
-        # 显式指定不带版本后缀的交叉编译器，与 CROSS_COMPILE 前缀保持一致
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
 
-        mkdir -p out
-        make O=out ARCH=arm64 blu_spark_defconfig
+        make ARCH=arm64 blu_spark_defconfig
 
-        ./scripts/config --file out/.config -m ZSTD_COMPRESS
-        ./scripts/config --file out/.config -m ZSTD_DECOMPRESS
-        ./scripts/config --file out/.config -m ZSTD_COMMON
+        # 开启模块编译选项
+        ./scripts/config --file .config -m ZSTD_COMPRESS
+        ./scripts/config --file .config -m ZSTD_DECOMPRESS
+        ./scripts/config --file .config -m ZSTD_COMMON
 
+        # 屏蔽 GCC 11 在老内核上的报错
         export KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -Wno-use-after-free"
         export HOSTCFLAGS="$KCFLAGS"
 
-        make O=out ARCH=arm64 olddefconfig
-        make O=out ARCH=arm64 modules_prepare
+        make ARCH=arm64 olddefconfig
+        make ARCH=arm64 modules_prepare
 
     - name: Compile Zstd Module
       run: |
@@ -102,13 +100,15 @@ jobs:
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
 
-        make O=out ARCH=arm64 \
+        # 原地编译独立模块，M 指定相对根目录的路径
+        make ARCH=arm64 \
              KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -fcommon" \
-             M=../lib/zstd modules
+             M=lib/zstd modules
 
     - name: Upload zstd.ko Artifact
       uses: actions/upload-artifact@v4
       with:
         name: zstd-ko-modules-gcc11
-        path: out/lib/zstd/*.ko
+        # 产物路径改为源码目录下的位置
+        path: lib/zstd/*.ko
         if-no-files-found: error
