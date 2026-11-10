@@ -36,7 +36,7 @@ jobs:
         mkdir -p lib/zstd
         cp -r zstd-src/lib/* lib/zstd/
         
-        # 直接自己写内核封装文件，不依赖原目录
+        # 生成模块入口
         cat > lib/zstd/zstd_compress_module.c << 'EOF'
         #include <linux/kernel.h>
         #include <linux/module.h>
@@ -62,10 +62,10 @@ jobs:
 
     - name: Patch for Linux 4.4 & GCC 11 Compatibility
       run: |
-        # 1. 强力清洗所有标准库头文件包含，哪怕是带空格的写法
-        find lib/zstd -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i -E 's|#\s*include\s*<(limits|stddef|stdint|string|stdlib)\.h>|/* removed */|g' {} +
+        # 1. 强力清洗标准库包含（注意：定界符从 | 改为了 @，解决语法错误）
+        find lib/zstd -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i -E 's@#\s*include\s*<(limits|stddef|stdint|string|stdlib)\.h>@/* removed */@g' {} +
 
-        # 2. 彻底重写 zstd_deps.h，手动提供类型定义，不依赖任何标准库
+        # 2. 彻底重写 zstd_deps.h，完全依赖内核头文件
         cat > lib/zstd/common/zstd_deps.h << 'EOF'
         #ifndef ZSTD_DEPS_COMMON
         #define ZSTD_DEPS_COMMON
@@ -77,14 +77,7 @@ jobs:
         #include <linux/errno.h>
         #include <linux/vmalloc.h>
         #include <linux/slab.h>
-
-        /* 针对老内核强补基本类型 */
-        #if defined(__SIZE_TYPE__)
-        typedef __SIZE_TYPE__ size_t;
-        #endif
-        #if defined(__PTRDIFF_TYPE__)
-        typedef __PTRDIFF_TYPE__ ptrdiff_t;
-        #endif
+        #include <linux/limits.h>
 
         #ifndef fallthrough
         #define fallthrough __attribute__((__fallthrough__))
@@ -113,7 +106,7 @@ jobs:
       run: |
         rm -f lib/zstd/Makefile
         cat > lib/zstd/Makefile << 'EOF'
-        # 关键修复：使用 -include 强制预包含 zstd_deps.h，确保 size_t 等类型提前定义
+        # 强制预包含 zstd_deps.h
         ccflags-y += -I$(srctree)/lib/zstd -I$(srctree)/lib/zstd/common -I$(srctree)/lib/zstd/compress -I$(srctree)/lib/zstd/decompress -fcommon
         ccflags-y += -include $(srctree)/lib/zstd/common/zstd_deps.h
 
