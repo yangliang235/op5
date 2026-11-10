@@ -44,41 +44,43 @@ jobs:
         if ! grep -q "define fallthrough" lib/zstd/common/zstd_deps.h; then
           printf '#ifndef fallthrough\n#define fallthrough __attribute__((__fallthrough__))\n#endif\n' >> lib/zstd/common/zstd_deps.h
         fi
+        # 删除公共代码里的 EXPORT_SYMBOL，避免模块加载符号冲突
         sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customCalloc);/d' lib/zstd/common/zstd_common.c
         sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customFree);/d' lib/zstd/common/zstd_common.c
 
-    - name: Flatten Source Files (Critical Fix)
+    - name: Patch Makefile (Native Directory Structure)
       run: |
-        # 关键修复：将所有子目录中的源文件复制到 lib/zstd 根目录，避免 Kbuild 路径问题
-        cp lib/zstd/compress/*.c lib/zstd/
-        cp lib/zstd/decompress/*.c lib/zstd/
-        cp lib/zstd/common/*.c lib/zstd/
-        
-        # 复制头文件（如果编译时需要）
-        cp lib/zstd/compress/*.h lib/zstd/
-        cp lib/zstd/decompress/*.h lib/zstd/
-        cp lib/zstd/common/*.h lib/zstd/
-        
-        # 删除可能引起冲突的旧 Makefile
         rm -f lib/zstd/Makefile
-
-    - name: Patch Makefile (Use Flat Filenames)
-      run: |
-        # 现在所有源文件都在同一目录下，Makefile 非常简单
         cat > lib/zstd/Makefile << 'EOF'
-        ccflags-y += -I$(srctree)/lib/zstd -fcommon
+        ccflags-y += -I$(srctree)/lib/zstd -I$(srctree)/lib/zstd/common -I$(srctree)/lib/zstd/compress -I$(srctree)/lib/zstd/decompress -fcommon
 
         obj-m += zstd_compress.o
-        zstd_compress-y := zstd_compress_module.o zstd_common.o entropy_common.o \
-                           error_private.o fse_decompress.o debug.o \
-                           fse_compress.o hist.o huf_compress.o zstd_compress.o \
-                           zstd_double_fast.o zstd_fast.o zstd_lazy.o zstd_ldm.o \
-                           zstd_opt.o
+        zstd_compress-y := zstd_compress_module.o \
+                           common/zstd_common.o \
+                           common/entropy_common.o \
+                           common/error_private.o \
+                           common/fse_decompress.o \
+                           common/debug.o \
+                           compress/fse_compress.o \
+                           compress/hist.o \
+                           compress/huf_compress.o \
+                           compress/zstd_compress.o \
+                           compress/zstd_double_fast.o \
+                           compress/zstd_fast.o \
+                           compress/zstd_lazy.o \
+                           compress/zstd_ldm.o \
+                           compress/zstd_opt.o
 
         obj-m += zstd_decompress.o
-        zstd_decompress-y := zstd_decompress_module.o zstd_common.o entropy_common.o \
-                             error_private.o fse_decompress.o debug.o \
-                             huf_decompress.o zstd_ddict.o zstd_decompress.o
+        zstd_decompress-y := zstd_decompress_module.o \
+                             common/zstd_common.o \
+                             common/entropy_common.o \
+                             common/error_private.o \
+                             common/fse_decompress.o \
+                             common/debug.o \
+                             decompress/huf_decompress.o \
+                             decompress/zstd_ddict.o \
+                             decompress/zstd_decompress.o
         EOF
 
     - name: Configure Kernel
@@ -103,7 +105,15 @@ jobs:
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
 
-        # 编译
+        echo "=== Verifying Source Files ==="
+        # 打印出实际存在的文件，确认 zstd_compress_module.c 是否真的在里面
+        ls -la lib/zstd/
+        ls -la lib/zstd/compress/
+
+        echo "=== Verifying Makefile ==="
+        head -n 5 lib/zstd/Makefile
+
+        # 执行编译
         make O=out \
              KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -fcommon" \
              M=$GITHUB_WORKSPACE/lib/zstd modules
