@@ -40,36 +40,51 @@ jobs:
 
     - name: Patch for Linux 4.4 & GCC 11 Compatibility
       run: |
-        sed -i 's|#include <linux/stddef.h>|#include <stddef.h>|' lib/zstd/zstd_deps.h || true
-        if ! grep -q "define fallthrough" lib/zstd/zstd_deps.h; then
-          printf '#ifndef fallthrough\n#define fallthrough __attribute__((__fallthrough__))\n#endif\n' >> lib/zstd/zstd_deps.h
+        # 1. 修改头文件依赖问题
+        sed -i 's|#include <linux/stddef.h>|#include <stddef.h>|' lib/zstd/common/zstd_deps.h || true
+        
+        # 2. 确保 fallthrough 宏存在
+        if ! grep -q "define fallthrough" lib/zstd/common/zstd_deps.h; then
+          printf '#ifndef fallthrough\n#define fallthrough __attribute__((__fallthrough__))\n#endif\n' >> lib/zstd/common/zstd_deps.h
         fi
 
-        cat > lib/zstd/zstd_common_module.c << 'EOF'
-        #include "common/zstd_deps.h"
-        #include "common/zstd_common.c"
-        #include "common/error_private.c"
-        #include "common/entropy_common.c"
-        #include "common/fse_decompress.c"
-        #include "common/debug.c"
-        EXPORT_SYMBOL_GPL(ZSTD_customCalloc);
-        EXPORT_SYMBOL_GPL(ZSTD_customFree);
-        EOF
+        # 3. 关键：删除 EXPORT_SYMBOL，让两个模块独立包含 common 源码，避免加载时符号重复冲突
+        sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customCalloc);/d' lib/zstd/common/zstd_common.c
+        sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customFree);/d' lib/zstd/common/zstd_common.c
 
-    - name: Patch Makefile (Force obj-m Compilation)
+    - name: Patch Makefile (Fix Path Prefix)
       run: |
-        # 关键修复：不再依赖 CONFIG_ 变量，直接硬编码 obj-m 强制编译
+        # 关键修复：源文件在子目录下，必须加上 compress/ 和 decompress/ 前缀
         cat > lib/zstd/Makefile << 'EOF'
         ccflags-y += -I$(srctree)/lib/zstd -fcommon
+
         obj-m += zstd_compress.o
+        zstd_compress-y := compress/zstd_compress_module.o \
+                           common/zstd_common.o \
+                           common/entropy_common.o \
+                           common/error_private.o \
+                           common/fse_decompress.o \
+                           common/debug.o \
+                           compress/fse_compress.o \
+                           compress/hist.o \
+                           compress/huf_compress.o \
+                           compress/zstd_compress.o \
+                           compress/zstd_double_fast.o \
+                           compress/zstd_fast.o \
+                           compress/zstd_lazy.o \
+                           compress/zstd_ldm.o \
+                           compress/zstd_opt.o
+
         obj-m += zstd_decompress.o
-        obj-m += zstd_common.o
-        zstd_common-y := zstd_common_module.o
-        zstd_compress-y := zstd_compress_module.o zstd_common.o entropy_common.o fse_compress.o \
-                           hist.o huf_compress.o zstd_compress.o zstd_double_fast.o \
-                           zstd_fast.o zstd_lazy.o zstd_ldm.o zstd_opt.o
-        zstd_decompress-y := zstd_decompress_module.o zstd_common.o entropy_common.o \
-                             fse_decompress.o huf_decompress.o zstd_ddict.o zstd_decompress.o
+        zstd_decompress-y := decompress/zstd_decompress_module.o \
+                             common/zstd_common.o \
+                             common/entropy_common.o \
+                             common/error_private.o \
+                             common/fse_decompress.o \
+                             common/debug.o \
+                             decompress/huf_decompress.o \
+                             decompress/zstd_ddict.o \
+                             decompress/zstd_decompress.o
         EOF
 
     - name: Configure Kernel
@@ -81,7 +96,6 @@ jobs:
 
         make O=out blu_spark_defconfig
 
-        # 屏蔽 GCC 11 在老内核上的报错
         export KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -Wno-use-after-free"
         export HOSTCFLAGS="$KCFLAGS"
 
@@ -95,12 +109,10 @@ jobs:
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
 
-        # 编译模块
         make O=out \
              KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -fcommon" \
              M=$GITHUB_WORKSPACE/lib/zstd modules
 
-        # 打印搜索日志，看看 .ko 到底在哪里
         echo "=== Searching for .ko files ==="
         find $GITHUB_WORKSPACE -name "*.ko"
 
@@ -108,7 +120,6 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: zstd-ko-modules-gcc11
-        # 兼容两种可能的生成路径
         path: |
           out/lib/zstd/*.ko
           lib/zstd/*.ko
