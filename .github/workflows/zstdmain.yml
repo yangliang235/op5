@@ -23,9 +23,8 @@ jobs:
           binutils-aarch64-linux-gnu \
           libelf-dev device-tree-compiler
 
-    - name: Clean Source Tree (Must Be First)
+    - name: Clean Source Tree
       run: |
-        # 强制干掉所有可能残留的构建目录和配置文件，确保源码树干净
         rm -rf out
         rm -f .config
         make mrproper || true
@@ -57,13 +56,14 @@ jobs:
         EXPORT_SYMBOL_GPL(ZSTD_customFree);
         EOF
 
-    - name: Patch Makefile for Module Compilation
+    - name: Patch Makefile (Force obj-m Compilation)
       run: |
+        # 关键修复：不再依赖 CONFIG_ 变量，直接硬编码 obj-m 强制编译
         cat > lib/zstd/Makefile << 'EOF'
         ccflags-y += -I$(srctree)/lib/zstd -fcommon
-        obj-$(CONFIG_ZSTD_COMPRESS) += zstd_compress.o
-        obj-$(CONFIG_ZSTD_DECOMPRESS) += zstd_decompress.o
-        obj-$(CONFIG_ZSTD_COMMON) += zstd_common.o
+        obj-m += zstd_compress.o
+        obj-m += zstd_decompress.o
+        obj-m += zstd_common.o
         zstd_common-y := zstd_common_module.o
         zstd_compress-y := zstd_compress_module.o zstd_common.o entropy_common.o fse_compress.o \
                            hist.o huf_compress.o zstd_compress.o zstd_double_fast.o \
@@ -79,13 +79,7 @@ jobs:
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
 
-        # 顺从环境，显式指定 O=out
         make O=out blu_spark_defconfig
-
-        # 注意：由于使用 out 目录，.config 位于 out/.config
-        ./scripts/config --file out/.config -m ZSTD_COMPRESS
-        ./scripts/config --file out/.config -m ZSTD_DECOMPRESS
-        ./scripts/config --file out/.config -m ZSTD_COMMON
 
         # 屏蔽 GCC 11 在老内核上的报错
         export KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -Wno-use-after-free"
@@ -101,15 +95,21 @@ jobs:
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
 
-        # 关键修复：使用绝对路径 $GITHUB_WORKSPACE/lib/zstd，避免相对路径在 out 目录下解析混乱
+        # 编译模块
         make O=out \
              KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -fcommon" \
              M=$GITHUB_WORKSPACE/lib/zstd modules
+
+        # 打印搜索日志，看看 .ko 到底在哪里
+        echo "=== Searching for .ko files ==="
+        find $GITHUB_WORKSPACE -name "*.ko"
 
     - name: Upload zstd.ko Artifact
       uses: actions/upload-artifact@v4
       with:
         name: zstd-ko-modules-gcc11
-        # 产物依旧在 out 目录下
-        path: out/lib/zstd/*.ko
+        # 兼容两种可能的生成路径
+        path: |
+          out/lib/zstd/*.ko
+          lib/zstd/*.ko
         if-no-files-found: error
