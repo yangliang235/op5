@@ -23,6 +23,13 @@ jobs:
           binutils-aarch64-linux-gnu \
           libelf-dev device-tree-compiler
 
+    - name: Clean Source Tree (Must Be First)
+      run: |
+        # 强制干掉所有可能残留的构建目录和配置文件，确保源码树干净
+        rm -rf out
+        rm -f .config
+        make mrproper || true
+
     - name: Fetch Zstd 1.5.7 Kernel Port
       run: |
         git clone --branch v1.5.7-kernel --single-branch https://github.com/facebook/zstd.git zstd-src
@@ -65,52 +72,44 @@ jobs:
                              fse_decompress.o huf_decompress.o zstd_ddict.o zstd_decompress.o
         EOF
 
-    - name: Force Clean Source Tree
-      run: |
-        # 强制删除可能残留的 out 目录，并彻底清理源码树
-        rm -rf out
-        make mrproper
-
     - name: Configure Kernel
       run: |
-        # 强制清空可能干扰的内核输出路径变量，并设定编译环境
-        unset KBUILD_OUTPUT
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
 
-        # 原地进行 defconfig 配置
-        make blu_spark_defconfig
+        # 顺从环境，显式指定 O=out
+        make O=out blu_spark_defconfig
 
-        # 开启模块编译选项
-        ./scripts/config --file .config -m ZSTD_COMPRESS
-        ./scripts/config --file .config -m ZSTD_DECOMPRESS
-        ./scripts/config --file .config -m ZSTD_COMMON
+        # 注意：由于使用 out 目录，.config 位于 out/.config
+        ./scripts/config --file out/.config -m ZSTD_COMPRESS
+        ./scripts/config --file out/.config -m ZSTD_DECOMPRESS
+        ./scripts/config --file out/.config -m ZSTD_COMMON
 
         # 屏蔽 GCC 11 在老内核上的报错
         export KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -Wno-use-after-free"
         export HOSTCFLAGS="$KCFLAGS"
 
-        make olddefconfig
-        make modules_prepare
+        make O=out olddefconfig
+        make O=out modules_prepare
 
     - name: Compile Zstd Module
       run: |
-        unset KBUILD_OUTPUT
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
 
-        # 编译独立模块
-        make \
+        # 关键修复：使用绝对路径 $GITHUB_WORKSPACE/lib/zstd，避免相对路径在 out 目录下解析混乱
+        make O=out \
              KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -fcommon" \
-             M=lib/zstd modules
+             M=$GITHUB_WORKSPACE/lib/zstd modules
 
     - name: Upload zstd.ko Artifact
       uses: actions/upload-artifact@v4
       with:
         name: zstd-ko-modules-gcc11
-        path: lib/zstd/*.ko
+        # 产物依旧在 out 目录下
+        path: out/lib/zstd/*.ko
         if-no-files-found: error
