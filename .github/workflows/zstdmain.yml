@@ -66,12 +66,11 @@ jobs:
         find lib/zstd -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i -E \
           '/^[[:space:]]*#[[:space:]]*include[[:space:]]*<(limits|stddef|stdint|string|stdlib|stdio|assert)\.h>/d' {} +
 
-        # 2. 构建完美兼容头文件（覆写内核的恶心宏，修复 xxhash 的检测）
+        # 2. 构建完美兼容头文件（补全 ZSTD_div64 等宏）
         cat > lib/zstd/common/zstd_deps.h << 'EOF'
         #ifndef ZSTD_DEPS_COMMON
         #define ZSTD_DEPS_COMMON
 
-        /* 必须先包含 types.h，否则 kernel.h 里的 u16 会未定义 */
         #include <linux/types.h>
         #include <linux/stddef.h>
         #include <linux/string.h>
@@ -80,6 +79,7 @@ jobs:
         #include <linux/slab.h>
         #include <linux/kernel.h>
         #include <linux/bug.h>
+        #include <linux/math64.h>
 
         /* 强行擦除内核的复杂宏定义，换成预处理能懂的纯数字 */
         #undef USHRT_MAX
@@ -146,6 +146,7 @@ jobs:
         #define ZSTD_memmove(d,s,n)    memmove((d),(s),(n))
         #define ZSTD_memset(d,s,n)     memset((d),(s),(n))
         #define ZSTD_memcmp(s1,s2,n)   memcmp((s1),(s2),(n))
+        #define ZSTD_div64(dividend, divisor) div64_u64(dividend, divisor)
         EOF
 
         # 移除公共代码的 EXPORT_SYMBOL，避免重复定义
