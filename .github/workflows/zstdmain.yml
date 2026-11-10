@@ -32,40 +32,41 @@ jobs:
     - name: Fetch Zstd 1.5.7 Kernel Port
       run: |
         git clone --branch v1.5.7-kernel --single-branch https://github.com/facebook/zstd.git zstd-src
-        
-        # 备份原内核的 zstd 目录
         mv lib/zstd lib/zstd.bak || true
         mkdir -p lib/zstd
-        
-        # 1. 复制新的 zstd 算法源码
         cp -r zstd-src/lib/* lib/zstd/
         
-        # 2. 核心修复：把原内核的 module 包装文件恢复回来，否则编译不出 .ko
+        # 恢复内核自身的模块包装文件
         cp lib/zstd.bak/zstd_compress_module.c lib/zstd/ || true
         cp lib/zstd.bak/zstd_decompress_module.c lib/zstd/ || true
         cp lib/zstd.bak/zstd_compress_module.h lib/zstd/ || true
         cp lib/zstd.bak/zstd_decompress_module.h lib/zstd/ || true
         
-        # 如果原内核连这俩文件都没有（极其罕见），我们写一个空壳保底
-        if [ ! -f lib/zstd/zstd_compress_module.c ]; then
-            echo '#include <linux/module.h>' > lib/zstd/zstd_compress_module.c
-            echo 'MODULE_LICENSE("GPL");' >> lib/zstd/zstd_compress_module.c
-        fi
-        if [ ! -f lib/zstd/zstd_decompress_module.c ]; then
-            echo '#include <linux/module.h>' > lib/zstd/zstd_decompress_module.c
-            echo 'MODULE_LICENSE("GPL");' >> lib/zstd/zstd_decompress_module.c
-        fi
-        
-        # 更新全局头文件
         cp zstd-src/lib/zstd.h include/linux/
         cp zstd-src/lib/zstd_errors.h include/linux/
 
     - name: Patch for Linux 4.4 & GCC 11 Compatibility
       run: |
-        sed -i 's|#include <linux/stddef.h>|#include <stddef.h>|' lib/zstd/common/zstd_deps.h || true
-        if ! grep -q "define fallthrough" lib/zstd/common/zstd_deps.h; then
-          printf '#ifndef fallthrough\n#define fallthrough __attribute__((__fallthrough__))\n#endif\n' >> lib/zstd/common/zstd_deps.h
-        fi
+        # 1. 重写 zstd_deps.h：移除标准 C 库依赖，替换为内核头文件
+        cat > lib/zstd/common/zstd_deps.h << 'EOF'
+        #ifndef ZSTD_DEPS_COMMON
+        #define ZSTD_DEPS_COMMON
+
+        #include <linux/kernel.h>
+        #include <linux/limits.h>
+        #include <linux/types.h>
+        #include <linux/stddef.h>
+        #include <linux/string.h>
+        #include <linux/errno.h>
+
+        #ifndef fallthrough
+        #define fallthrough __attribute__((__fallthrough__))
+        #endif
+
+        #endif /* ZSTD_DEPS_COMMON */
+        EOF
+
+        # 2. 移除公共代码的 EXPORT_SYMBOL，避免模块加载符号冲突
         sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customCalloc);/d' lib/zstd/common/zstd_common.c
         sed -i '/EXPORT_SYMBOL_GPL(ZSTD_customFree);/d' lib/zstd/common/zstd_common.c
 
@@ -125,10 +126,6 @@ jobs:
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CC=aarch64-linux-gnu-gcc
         export HOSTCC=gcc
-
-        echo "=== Verifying Entry Files Exist ==="
-        ls -la lib/zstd/zstd_compress_module.c
-        ls -la lib/zstd/zstd_decompress_module.c
 
         make O=out \
              KCFLAGS="-Wno-error -Wno-array-bounds -Wno-stringop-overflow -Wno-misleading-indentation -fcommon" \
