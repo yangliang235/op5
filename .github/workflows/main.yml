@@ -60,6 +60,88 @@ jobs:
           print("swappiness = 200 修改成功。")
           PY
 
+      - name: Patch Power Supply (4.5V Default + Magisk Writeable)
+        run: |
+          echo "🔧 修补 qpnp-smb2.c：默认满电 4.5V + 允许 Magisk 写入 voltage_max + echo 同步温度区域..."
+          python3 - << 'PYEOF'
+          import re
+          import sys
+
+          FILE = "drivers/power/supply/qcom/qpnp-smb2.c"
+
+          with open(FILE, 'r') as f:
+              content = f.read()
+
+          pat1 = r'(chg->ufp_only_mode = of_property_read_bool\(node,\s*\n\s*"qcom,ufp-only-mode"\);)'
+          rep1 = r'\1\n\n\t/* OnePlus: force 4.5V default full-charge voltage */\n\tchg->vbatmax[BATT_TEMP_NORMAL] = 4500;'
+          content, n1 = re.subn(pat1, rep1, content, count=1, flags=re.DOTALL)
+          if n1 != 1:
+              print("❌ Patch1 失败：找不到 ufp-only-mode 特征")
+              sys.exit(1)
+
+          pat2 = r'(case POWER_SUPPLY_PROP_DIE_HEALTH:\s*\n\s*return 1;)'
+          rep2 = r'\1\n\tcase POWER_SUPPLY_PROP_VOLTAGE_MAX:\n\t\treturn 1;'
+          content, n2 = re.subn(pat2, rep2, content, count=1, flags=re.DOTALL)
+          if n2 != 1:
+              print("❌ Patch2 失败：找不到 DIE_HEALTH 特征")
+              sys.exit(1)
+
+          pat3 = r'(case POWER_SUPPLY_PROP_VOLTAGE_MAX:\s*\n\s*chg->batt_profile_fv_uv = val->intval;\s*\n\s*vote\(chg->fv_votable, BATT_PROFILE_VOTER, true, val->intval\);)'
+          rep3 = r'\1\n\t\tchg->vbatmax[BATT_TEMP_NORMAL] = val->intval / 1000;'
+          content, n3 = re.subn(pat3, rep3, content, count=1, flags=re.DOTALL)
+          if n3 != 1:
+              print("❌ Patch3 失败：找不到 VOLTAGE_MAX set 特征")
+              sys.exit(1)
+
+          with open(FILE, 'w') as f:
+              f.write(content)
+
+          print(f"✅ qpnp-smb2.c 修补完成 (patch1={n1}, patch2={n2}, patch3={n3})")
+          PYEOF
+
+          echo "🔧 修补 op_dash_adapter.c：温度区域投票者改为 BATT_PROFILE_VOTER（可选，找不到就跳过）..."
+          python3 - << 'PYEOF'
+          import os
+          import re
+
+          FILE = "drivers/power/supply/qcom/op_dash_adapter.c"
+
+          if not os.path.exists(FILE):
+              print(f"⚠️ {FILE} 不存在，跳过该补丁（qpnp-smb2.c 的 patch3 已能同步 vbatmax，目标仍达成）")
+              raise SystemExit(0)
+
+          with open(FILE, 'r') as f:
+              content = f.read()
+
+          old = "DEFAULT_VOTER, true, vfloat * 1000"
+          new = "BATT_PROFILE_VOTER, true, vfloat * 1000"
+          n = 0
+
+          if old in content:
+              content = content.replace(old, new, 1)
+              n = 1
+              print("✅ 使用精确字符串替换成功")
+          else:
+              pat = r'DEFAULT_VOTER(\s*,\s*true\s*,\s*vfloat\s*\*\s*1000)'
+              content, n = re.subn(pat, r'BATT_PROFILE_VOTER\1', content, count=1)
+              if n >= 1:
+                  print("✅ 使用宽松正则替换成功")
+
+          if n < 1:
+              print("⚠️ op_dash_adapter.c 中找不到目标特征，跳过该补丁")
+              print(f"  DEFAULT_VOTER: {content.count('DEFAULT_VOTER')}, "
+                    f"vfloat * 1000: {content.count('vfloat * 1000')}, "
+                    f"fv_votable: {content.count('fv_votable')}, "
+                    f"set_chg_ibat_vbat_max: {content.count('set_chg_ibat_vbat_max')}")
+              print("  qpnp-smb2.c 的 patch3 已同步 vbatmax[BATT_TEMP_NORMAL]，4.5V 默认值和 Magisk 写入仍然有效。")
+              raise SystemExit(0)
+
+          with open(FILE, 'w') as f:
+              f.write(content)
+
+          print("✅ op_dash_adapter.c 修补完成 (fv_votable: DEFAULT_VOTER -> BATT_PROFILE_VOTER)")
+          PYEOF
+
       - name: Configure kernel for APatch / KPM (GCC 11)
         run: |
           make O=out ARCH=$ARCH \
